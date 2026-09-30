@@ -42,12 +42,7 @@ const GRAND_TREE = { x: FOREST_POS.x + 1.8, z: FOREST_POS.z + 3.6 }
 
 export function ForestZone() {
   const season = useGameStore((s) => s.season)
-  const trees = useGameStore(
-    (s) => s.trees,
-    (a, b) =>
-      a === b ||
-      (a.length === b.length && a.every((t, i) => t.stage === b[i]!.stage)),
-  )
+  const trees = useGameStore((s) => s.trees)
   const look = seasonLook(season)
 
   return (
