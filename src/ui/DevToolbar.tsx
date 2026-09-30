@@ -510,6 +510,9 @@ export function DevToolbar() {
             <button type="button" style={btn} onClick={() => useGameStore.getState().restartGame()}>
               重开一局
             </button>
+            <button type="button" style={btn} onClick={() => devSet({ clearSave: true })}>
+              清除存档
+            </button>
             <button type="button" style={btn} onClick={() => devSet({ allCatsRole: 'miner' })}>
               全员矿工
             </button>

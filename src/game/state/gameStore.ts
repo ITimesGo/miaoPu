@@ -1,8 +1,7 @@
 import { create } from 'zustand'
-import { createStarterCat, getBreed, growSpeedFactor, harvestYield, nextRecruitBreed, pickRecruitRole } from '../data/breeds'
+import { getBreed, growSpeedFactor, harvestYield, nextRecruitBreed, pickRecruitRole } from '../data/breeds'
 import { getCrop } from '../data/crops'
 import {
-  createInitialTrees,
   FOREST_LAYOUT,
   isTreeMature,
   TREE_MAX_STAGE,
@@ -65,6 +64,13 @@ import {
   type SpeechBubble,
 } from '../systems/catDialogue'
 import {
+  attachAutoSave,
+  clearSavedGame,
+  createFreshPersistSlice,
+  loadSavedGame,
+  writeSavedGame,
+} from './saveGame'
+import {
   absoluteGameMinute,
   isPrecipitating,
   precipKindForSeason,
@@ -86,7 +92,6 @@ import {
   COTTAGE_UPGRADE_ORE,
   COTTAGE_UPGRADE_PRICE,
   COTTAGE_UPGRADE_WOOD,
-  emptyBoatVoyage,
   CHOP_WOOD_YIELD,
   CHOP_DAILY_LIMIT,
   DAYS_PER_SEASON,
@@ -474,92 +479,34 @@ export interface DevPatch {
   clearSpeechCooldown?: boolean
   /** 强制某情境冒泡（随机一只健康猫） */
   forceSpeechSituation?: DialogueSituation
+  /** 清除浏览器本地存档（不重置当前局） */
+  clearSave?: boolean
 }
 
+const savedSlice = loadSavedGame()
+const initialPersist = savedSlice ?? createFreshPersistSlice()
+
 export const useGameStore = create<GameState>((set, get) => ({
-  day: 1,
-  minuteOfDay: 8 * 60,
-  season: 'spring',
+  ...initialPersist,
   timeScale: 1,
-  coins: 80,
-  inventory: { wheat_seed: 8, wheat: 0, toy: 2, snack: 3, ore: 0, wood: 0, fish: 4, knowledge: 0, medicine: 0 },
-  granary: { level: 0, condition: 100 },
-  harbor: { level: 1 },
-  boat: { level: 1 },
-  cottage: { level: 1 },
-  boatVoyage: emptyBoatVoyage(absoluteGameMinute(1, 8 * 60) + 3 * 60),
-  plots: emptyPlots(),
-  trees: createInitialTrees(),
-  cats: [createStarterCat()],
-  statusMessage: '奶糖开始打理田地…升级建筑需要矿石和木材',
-  weather: 'clear' as WeatherKind,
-  weatherUntil: 0,
-  nextWeatherAt: absoluteGameMinute(1, 8 * 60) + rollClearGap('spring'),
-  rainbowUntil: 0,
-  gameEvent: emptyGameEvent(absoluteGameMinute(1, 8 * 60) + rollEventGap()),
-  cloudCount: 7,
-  cloudSpeed: 1,
-  celestialSize: 1.15,
-  skyOrbit: 52,
-  gameOver: false,
-  seasonGoal: rollSeasonGoal('spring', 1, []),
-  goalHistory: [],
+  statusMessage: savedSlice
+    ? `已读取本地进度（第 ${savedSlice.day} 天）`
+    : '奶糖开始打理田地…升级建筑需要矿石和木材',
   speechBubbles: [],
-  lastIslandSpeechAt: 0,
-  catSpeechAt: {},
-  catMorningOutDay: {},
-  recentLineIds: [],
-  catRecentLineIds: {},
 
   setTimeScale: (scale) => set({ timeScale: scale }),
   setStatusMessage: (msg) => set({ statusMessage: msg }),
 
   restartGame: () => {
+    clearSavedGame()
+    const fresh = createFreshPersistSlice()
     set({
-      day: 1,
-      minuteOfDay: 8 * 60,
-      season: 'spring',
+      ...fresh,
       timeScale: 1,
-      coins: 80,
-      inventory: {
-        wheat_seed: 8,
-        wheat: 0,
-        toy: 2,
-        snack: 3,
-        ore: 0,
-        wood: 0,
-        fish: 4,
-        knowledge: 0,
-        medicine: 0,
-      },
-      granary: { level: 0, condition: 100 },
-      harbor: { level: 1 },
-      boat: { level: 1 },
-      cottage: { level: 1 },
-      boatVoyage: emptyBoatVoyage(absoluteGameMinute(1, 8 * 60) + 3 * 60),
-      plots: emptyPlots(),
-      trees: createInitialTrees(),
-      cats: [createStarterCat()],
       statusMessage: '新的一天：奶糖重新打理田地…',
-      weather: 'clear' as WeatherKind,
-      weatherUntil: 0,
-      nextWeatherAt: absoluteGameMinute(1, 8 * 60) + rollClearGap('spring'),
-      rainbowUntil: 0,
-      gameEvent: emptyGameEvent(absoluteGameMinute(1, 8 * 60) + rollEventGap()),
-      cloudCount: 7,
-      cloudSpeed: 1,
-      celestialSize: 1.15,
-      skyOrbit: 52,
-      gameOver: false,
-      seasonGoal: rollSeasonGoal('spring', 1, []),
-      goalHistory: [],
       speechBubbles: [],
-      lastIslandSpeechAt: 0,
-      catSpeechAt: {},
-      catMorningOutDay: {},
-      recentLineIds: [],
-      catRecentLineIds: {},
     })
+    writeSavedGame(fresh)
   },
   setCatPose: (catId, x, z, behavior) =>
     set((s) => {
@@ -945,6 +892,11 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
     }
 
+    if (patch.clearSave) {
+      clearSavedGame()
+      next.statusMessage = '【开发者】已清除浏览器存档（当前局仍继续）'
+    }
+
     {
       const day = next.day ?? s.day
       const minute = next.minuteOfDay ?? s.minuteOfDay
@@ -1050,7 +1002,8 @@ export const useGameStore = create<GameState>((set, get) => ({
         !patch.completeGoal &&
         !patch.clearGoalHistory &&
         !patch.clearSpeechCooldown &&
-        !patch.forceSpeechSituation
+        !patch.forceSpeechSituation &&
+        !patch.clearSave
       ) {
         next.statusMessage = '【开发者】已应用调试参数'
       }
@@ -2112,5 +2065,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     return true
   },
 }))
+
+attachAutoSave(useGameStore)
 
 export { getBreed }
