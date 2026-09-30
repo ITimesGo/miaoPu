@@ -1,0 +1,8 @@
+# Quaternius Cat (Ultimate Animated Animals)
+
+- Source: Quaternius — https://quaternius.com/
+- Also mirrored via community repos / Poly Pizza
+- License: **CC0 1.0 Public Domain** (free for personal & commercial use, no attribution required)
+- Files: `Cat.gltf` (embedded buffers + atlas)
+
+Clips used in-game: `Walk`, `Idle`, `Idle_Eating`

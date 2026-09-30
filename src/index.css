@@ -1,0 +1,49 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #1a2f28;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+/**
+ * 统一滚动条（商店 / 说明 / 开发栏等）
+ * 可滚动容器请加 className="miaopu-scroll"
+ */
+.miaopu-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(160, 190, 150, 0.45) transparent;
+}
+
+.miaopu-scroll::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.miaopu-scroll::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 4px 0;
+}
+
+.miaopu-scroll::-webkit-scrollbar-thumb {
+  background: rgba(160, 190, 150, 0.4);
+  border-radius: 999px;
+}
+
+.miaopu-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(200, 220, 180, 0.55);
+}
+
+.miaopu-scroll::-webkit-scrollbar-button {
+  display: none;
+  height: 0;
+  width: 0;
+}
