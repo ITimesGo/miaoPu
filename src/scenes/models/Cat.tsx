@@ -1,6 +1,7 @@
 import { useFrame } from '@react-three/fiber'
 import { useMemo, useRef, type MutableRefObject } from 'react'
 import { Color, DoubleSide, type Group } from 'three'
+import { useGameStore } from '../../game/state/gameStore'
 import type { CatPalette, CoatPattern, CatRole } from '../../game/types'
 
 export type CatMotion = 'idle' | 'walk' | 'work' | 'chop' | 'farm' | 'fish' | 'sleep'
@@ -38,12 +39,13 @@ export function CatModel({
   const tool = useRef<Group>(null)
   const head = useRef<Group>(null)
   const backRod = useRef<Group>(null)
+  const animTime = useRef(0)
   const handRod = useRef<Group>(null)
   const bucket = useRef<Group>(null)
 
   const c = useMemo(() => tintPalette(palette), [palette])
 
-  useFrame((state) => {
+  useFrame((_, delta) => {
     const m = motionRef?.current ?? motion
     const walk = m === 'walk'
     const work = m === 'work'
@@ -52,7 +54,8 @@ export function CatModel({
     const fish = m === 'fish'
     const sleep = m === 'sleep'
     const speed = walk ? 9 : chop ? 10 : farm ? 8.5 : fish ? 6.2 : work ? 7.5 : 2.4
-    const t = state.clock.elapsedTime * speed + animOffset
+    animTime.current += delta * Math.max(0, useGameStore.getState().timeScale)
+    const t = animTime.current * speed + animOffset
     const a = sleep ? 0 : Math.sin(t)
     const b = -a
     const swing = Math.sin(t)

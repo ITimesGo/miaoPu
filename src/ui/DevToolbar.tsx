@@ -3,6 +3,7 @@ import { TREE_REGROW_DAYS, treeRegrowDays } from '../game/data/forest'
 import { absoluteGameMinute, weatherLabel } from '../game/data/weather'
 import { eventLabel, MINUTES_PER_YEAR } from '../game/data/events'
 import { useGameStore } from '../game/state/gameStore'
+import { coinSoftCap, softCapFor } from '../game/data/economy'
 import {
   BOAT_MAX_LEVEL,
   CHOP_DAILY_LIMIT,
@@ -11,6 +12,7 @@ import {
   FISH_DAILY_LIMIT,
   GRANARY_MAX_LEVEL,
   HARBOR_MAX_LEVEL,
+  MINE_DAILY_LIMIT,
   MINUTES_PER_DAY,
   ROLE_MAX_LEVEL,
   STUDY_DAILY_LIMIT,
@@ -139,6 +141,20 @@ export function DevToolbar() {
 
   const hour = Math.floor(minuteOfDay / 60)
   const minute = Math.floor(minuteOfDay % 60)
+  const buildings = {
+    cottage: cottage.level,
+    harbor: harbor.level,
+    boat: boat.level,
+    granary: granary.level,
+  }
+  const coinCap = coinSoftCap(buildings)
+  const fishCap = softCapFor('fish', buildings)!
+  const oreCap = softCapFor('ore', buildings)!
+  const woodCap = softCapFor('wood', buildings)!
+  const medCap = softCapFor('medicine', buildings)!
+  const knowCap = softCapFor('knowledge', buildings)!
+  const toyCap = softCapFor('toy', buildings)!
+  const snackCap = softCapFor('snack', buildings)!
 
   return (
     <div style={panel}>
@@ -377,16 +393,35 @@ export function DevToolbar() {
               type="button"
               style={btn}
               onClick={() =>
-                devSet({ coins: 9999, ore: 30, wood: 12, fish: 20, knowledge: 30, medicine: 20 })
+                devSet({
+                  coins: coinCap,
+                  ore: oreCap,
+                  wood: woodCap,
+                  fish: fishCap,
+                  knowledge: knowCap,
+                  medicine: medCap,
+                  toy: toyCap,
+                  snack: snackCap,
+                })
               }
             >
-              富豪包
+              满资源（夹帽）
             </button>
             <button
               type="button"
               style={btn}
               onClick={() =>
-                devSet({ coins: 0, ore: 0, wood: 0, wheat: 0, fish: 0, knowledge: 0, medicine: 0 })
+                devSet({
+                  coins: 0,
+                  ore: 0,
+                  wood: 0,
+                  wheat: 0,
+                  fish: 0,
+                  knowledge: 0,
+                  medicine: 0,
+                  toy: 0,
+                  snack: 0,
+                })
               }
             >
               清空经济
@@ -483,6 +518,36 @@ export function DevToolbar() {
             <button type="button" style={btn} onClick={() => devSet({ forceSickOne: true })}>
               随机生病
             </button>
+            <button type="button" style={btn} onClick={() => devSet({ forceComfortBoost: true })}>
+              开心加成
+            </button>
+            <button type="button" style={btn} onClick={() => devSet({ forcePirateRaid: true })}>
+              海盗来袭
+            </button>
+            <button type="button" style={btn} onClick={() => devSet({ forcePirateTribute: true })}>
+              海盗献贡
+            </button>
+            <button type="button" style={btn} onClick={() => devSet({ forcePirateFight: true })}>
+              海盗反抗揭晓
+            </button>
+            <button type="button" style={btn} onClick={() => devSet({ forcePlagueTide: true })}>
+              疫病潮
+            </button>
+            <button type="button" style={btn} onClick={() => devSet({ forceStrayCats: true })}>
+              流浪猫
+            </button>
+            <button type="button" style={btn} onClick={() => devSet({ clearMajorCooldown: true })}>
+              清大事冷却
+            </button>
+            <button type="button" style={btn} onClick={() => devSet({ clearPlague: true })}>
+              清疫病残留
+            </button>
+            <button type="button" style={btn} onClick={() => devSet({ toolsWorn: true })}>
+              工具变钝
+            </button>
+            <button type="button" style={btn} onClick={() => devSet({ toolsWorn: false })}>
+              修好工具
+            </button>
             <button type="button" style={btn} onClick={() => devSet({ cureAll: true })}>
               全部治愈
             </button>
@@ -553,6 +618,12 @@ export function DevToolbar() {
               .join(' · ') || `0/${CHOP_DAILY_LIMIT}`}{' '}
             · 间隔约 {Math.round(CHOP_SLOT_MINUTES / 60)} 时
             <br />
+            今日采矿{' '}
+            {cats
+              .filter((c) => c.role === 'miner')
+              .map((c) => `${c.minesToday ?? 0}/${MINE_DAILY_LIMIT}`)
+              .join(' · ') || `0/${MINE_DAILY_LIMIT}`}
+            <br />
             今日钓鱼{' '}
             {cats
               .filter((c) => c.role === 'fisher')
@@ -570,6 +641,9 @@ export function DevToolbar() {
               .filter((c) => c.role === 'doctor')
               .map((c) => `${c.craftsToday ?? 0}/${CRAFT_DAILY_LIMIT}`)
               .join(' · ') || `0/${CRAFT_DAILY_LIMIT}`}
+            <br />
+            当前帽：金 {coinCap} · 鱼/矿/木/药 {fishCap}/{oreCap}/{woodCap}/{medCap} · 知{' '}
+            {knowCap} · 玩/零 {toyCap}/{snackCap}
             <br />
             日结：吃鱼 → 药品治病；病猫无药翌日离世（药不当饭）
             <br />

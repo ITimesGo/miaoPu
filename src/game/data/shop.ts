@@ -1,4 +1,8 @@
 import {
+  COMFORT_BOOST_MINUTES,
+  COMFORT_BOOST_MULT,
+} from './careers'
+import {
   BOAT_MAX_LEVEL,
   BOAT_UPGRADE_KNOWLEDGE,
   BOAT_UPGRADE_ORE,
@@ -27,7 +31,7 @@ import {
   HARBOR_UPGRADE_PRICE,
   HARBOR_UPGRADE_WOOD,
   POCKET_WHEAT_CAP,
-  RECRUIT_PRICE_SCALE,
+  RECRUIT_PRICE_GROWTH,
   ROLE_MAX_LEVEL,
   ROLE_UPGRADE_KNOWLEDGE,
   SEED_PACK_AMOUNT,
@@ -40,6 +44,7 @@ import {
 } from '../types'
 import { ROLE_LABEL, clampRoleLevel } from './careers'
 import { nextRecruitBreed } from './breeds'
+import { softCapDeltaHint, type SoftCapBuildings } from './economy'
 
 export type ShopCategory = 'item' | 'building' | 'cat' | 'sell'
 
@@ -65,6 +70,8 @@ export interface ShopAction {
   oreCost?: number
   woodCost?: number
   knowledgeCost?: number
+  /** 有值时不可购买（资源够也不行），并在商店显示原因 */
+  blockedReason?: string
 }
 
 export function granaryCapacity(granary: GranaryState): number {
@@ -74,10 +81,11 @@ export function granaryCapacity(granary: GranaryState): number {
   return Math.max(1, Math.floor(base * factor))
 }
 
-/** 招募价随当前猫数递增；物品价不变。 */
+/** 招募价随当前猫数复合递增；物品价不变。 */
 export function recruitPriceFor(basePrice: number, currentCatCount: number): number {
   if (basePrice <= 0) return 0
-  return Math.round(basePrice * (1 + currentCatCount * RECRUIT_PRICE_SCALE))
+  const n = Math.max(0, Math.floor(currentCatCount))
+  return Math.round(basePrice * Math.pow(RECRUIT_PRICE_GROWTH, n))
 }
 
 /** 找一只可升职业等级的猫（优先等级最低） */
@@ -100,6 +108,16 @@ export function getShopActions(input: {
 }): ShopAction[] {
   const { granary, harbor, boat, cottage, ownedBreedIds, catCount, cats } = input
   const cap = catCapForCottage(cottage.level)
+  const softBefore: SoftCapBuildings = {
+    cottage: cottage.level,
+    harbor: harbor.level,
+    boat: boat.level,
+    granary: granary.level,
+  }
+  const appendSoftHint = (desc: string, after: SoftCapBuildings) => {
+    const hint = softCapDeltaHint(softBefore, after)
+    return hint ? `${desc} · ${hint}` : desc
+  }
   const actions: ShopAction[] = [
     {
       id: 'buy_seed',
@@ -112,14 +130,14 @@ export function getShopActions(input: {
       id: 'buy_toy',
       category: 'item',
       label: '玩具',
-      desc: `玩耍消耗（定价固定）`,
+      desc: `玩耍后约 ${COMFORT_BOOST_MINUTES / 60} 小时干活 +${Math.round((COMFORT_BOOST_MULT - 1) * 100)}%`,
       price: TOY_PRICE,
     },
     {
       id: 'buy_snack',
       category: 'item',
       label: '零食',
-      desc: `加餐（日结仍要吃鱼）`,
+      desc: `加餐后约 ${COMFORT_BOOST_MINUTES / 60} 小时干活 +${Math.round((COMFORT_BOOST_MULT - 1) * 100)}%（日结仍要吃鱼）`,
       price: SNACK_PRICE,
     },
   ]
@@ -156,7 +174,10 @@ export function getShopActions(input: {
       id: 'cottage_upgrade',
       category: 'building',
       label: '升级小屋',
-      desc: `Lv.${cottage.level}→${lv} · 猫口 ${catCapForCottage(lv)}`,
+      desc: appendSoftHint(
+        `Lv.${cottage.level}→${lv} · 猫口 ${catCapForCottage(lv)}`,
+        { ...softBefore, cottage: lv },
+      ),
       price: COTTAGE_UPGRADE_PRICE[lv] ?? 999,
       oreCost: COTTAGE_UPGRADE_ORE[lv],
       woodCost: COTTAGE_UPGRADE_WOOD[lv],
@@ -169,7 +190,10 @@ export function getShopActions(input: {
       id: 'granary_buy',
       category: 'building',
       label: '建粮仓',
-      desc: `容量 ${GRANARY_CAPACITY[1]}`,
+      desc: appendSoftHint(`小麦容量 ${GRANARY_CAPACITY[1]}`, {
+        ...softBefore,
+        granary: 1,
+      }),
       price: GRANARY_BUY_PRICE,
       oreCost: GRANARY_BUY_ORE || undefined,
       woodCost: GRANARY_BUY_WOOD || undefined,
@@ -181,20 +205,26 @@ export function getShopActions(input: {
         id: 'granary_upgrade',
         category: 'building',
         label: '升级粮仓',
-        desc: `Lv.${granary.level}→${lv} · 容量 ${GRANARY_CAPACITY[lv]}`,
+        desc: appendSoftHint(
+          `Lv.${granary.level}→${lv} · 小麦容量 ${GRANARY_CAPACITY[lv]}`,
+          { ...softBefore, granary: lv },
+        ),
         price: GRANARY_UPGRADE_PRICE[lv] ?? 999,
         oreCost: GRANARY_UPGRADE_ORE[lv],
         woodCost: GRANARY_UPGRADE_WOOD[lv],
         knowledgeCost: GRANARY_UPGRADE_KNOWLEDGE[lv],
       })
     }
-    actions.push({
-      id: 'granary_repair',
-      category: 'building',
-      label: '修缮粮仓',
-      desc: `完好度 +${GRANARY_REPAIR_AMOUNT}（只耗金）`,
-      price: GRANARY_REPAIR_COST,
-    })
+    const cond = Math.max(0, Math.min(100, Math.floor(granary.condition)))
+    if (cond < 100) {
+      actions.push({
+        id: 'granary_repair',
+        category: 'building',
+        label: '修缮粮仓',
+        desc: `完好度 ${cond}/100 · +${GRANARY_REPAIR_AMOUNT}（只耗金）`,
+        price: GRANARY_REPAIR_COST,
+      })
+    }
   }
 
   if (harbor.level < HARBOR_MAX_LEVEL) {
@@ -203,7 +233,10 @@ export function getShopActions(input: {
       id: 'harbor_upgrade',
       category: 'building',
       label: '升级港口',
-      desc: `Lv.${harbor.level}→${lv} · 码头扩大 · 商船更常来`,
+      desc: appendSoftHint(
+        `Lv.${harbor.level}→${lv} · 码头扩大 · 商船更常来`,
+        { ...softBefore, harbor: lv },
+      ),
       price: HARBOR_UPGRADE_PRICE[lv] ?? 999,
       oreCost: HARBOR_UPGRADE_ORE[lv],
       woodCost: HARBOR_UPGRADE_WOOD[lv],
@@ -217,7 +250,10 @@ export function getShopActions(input: {
       id: 'boat_upgrade',
       category: 'building',
       label: '升级货船',
-      desc: `Lv.${boat.level}→${lv} · 船只变大`,
+      desc: appendSoftHint(`Lv.${boat.level}→${lv} · 船只变大`, {
+        ...softBefore,
+        boat: lv,
+      }),
       price: BOAT_UPGRADE_PRICE[lv] ?? 999,
       oreCost: BOAT_UPGRADE_ORE[lv],
       woodCost: BOAT_UPGRADE_WOOD[lv],

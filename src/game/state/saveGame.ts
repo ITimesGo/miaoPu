@@ -1,13 +1,24 @@
 import { FOREST_LAYOUT, createInitialTrees } from '../data/forest'
 import { emptyGameEvent, rollEventGap, type GameEvent } from '../data/events'
 import {
+  emptyMajorEvent,
+  type MajorEventKind,
+  type MajorEventPhase,
+  type MajorEventState,
+} from '../data/majorEvents'
+import type { PirateFightOutcome } from '../data/pirates'
+import {
   GOAL_HISTORY_LIMIT,
   type GoalKind,
   type SeasonGoal,
   rollSeasonGoal,
 } from '../data/goals'
 import {
+  BOAT_MAX_LEVEL,
+  COTTAGE_MAX_LEVEL,
   FARM_SIZE,
+  GRANARY_MAX_LEVEL,
+  HARBOR_MAX_LEVEL,
   emptyBoatVoyage,
   type BoatVoyage,
   type CatInstance,
@@ -20,6 +31,8 @@ import {
 } from '../types'
 import { absoluteGameMinute, rollClearGap, type WeatherKind } from '../data/weather'
 import { createStarterCat } from '../data/breeds'
+import { STARTING_WOOD } from '../data/heating'
+import { STARTING_ORE } from '../data/tools'
 
 export const SAVE_VERSION = 1
 export const SAVE_KEY = `miaopu.save.v${SAVE_VERSION}`
@@ -74,6 +87,7 @@ export type PersistSlice = {
   nextWeatherAt: number
   rainbowUntil: number
   gameEvent: GameEvent
+  majorEvent: MajorEventState
   cloudCount: number
   cloudSpeed: number
   celestialSize: number
@@ -86,6 +100,8 @@ export type PersistSlice = {
   catMorningOutDay: Record<string, number>
   recentLineIds: string[]
   catRecentLineIds: Record<string, string[]>
+  /** 工具保养不足：次日矿工/伐木/渔夫产量降低 */
+  toolsWorn: boolean
 }
 
 type SaveFile = {
@@ -117,8 +133,8 @@ export function createFreshPersistSlice(): PersistSlice {
       wheat: 0,
       toy: 2,
       snack: 3,
-      ore: 0,
-      wood: 0,
+      ore: STARTING_ORE,
+      wood: STARTING_WOOD,
       fish: 4,
       knowledge: 0,
       medicine: 0,
@@ -136,6 +152,7 @@ export function createFreshPersistSlice(): PersistSlice {
     nextWeatherAt: absoluteGameMinute(1, 8 * 60) + rollClearGap('spring'),
     rainbowUntil: 0,
     gameEvent: emptyGameEvent(absoluteGameMinute(1, 8 * 60) + rollEventGap()),
+    majorEvent: emptyMajorEvent(),
     cloudCount: 7,
     cloudSpeed: 1,
     celestialSize: 1.15,
@@ -148,6 +165,7 @@ export function createFreshPersistSlice(): PersistSlice {
     catMorningOutDay: {},
     recentLineIds: [],
     catRecentLineIds: {},
+    toolsWorn: false,
   }
 }
 
@@ -171,6 +189,7 @@ export function pickPersistSlice(s: PersistSlice): PersistSlice {
     nextWeatherAt: s.nextWeatherAt,
     rainbowUntil: s.rainbowUntil,
     gameEvent: { ...s.gameEvent },
+    majorEvent: { ...s.majorEvent },
     cloudCount: s.cloudCount,
     cloudSpeed: s.cloudSpeed,
     celestialSize: s.celestialSize,
@@ -185,6 +204,7 @@ export function pickPersistSlice(s: PersistSlice): PersistSlice {
     catRecentLineIds: Object.fromEntries(
       Object.entries(s.catRecentLineIds).map(([k, v]) => [k, [...v]]),
     ),
+    toolsWorn: s.toolsWorn,
   }
 }
 
@@ -244,13 +264,67 @@ function sanitizeCats(raw: unknown): CatInstance[] {
       role,
       roleLevel: Math.max(1, Math.floor(asNum(o.roleLevel, 1))),
       chopsToday: Math.max(0, Math.floor(asNum(o.chopsToday, 0))),
+      minesToday: Math.max(0, Math.floor(asNum(o.minesToday, 0))),
       castsToday: Math.max(0, Math.floor(asNum(o.castsToday, 0))),
       studiesToday: Math.max(0, Math.floor(asNum(o.studiesToday, 0))),
       craftsToday: Math.max(0, Math.floor(asNum(o.craftsToday, 0))),
       sick: Boolean(o.sick),
+      boostUntil: Math.max(0, Math.floor(asNum(o.boostUntil, 0))),
     })
   }
   return out.length > 0 ? out : [createStarterCat()]
+}
+
+const MAJOR_KINDS = new Set<MajorEventKind>(['none', 'pirate', 'plague', 'stray'])
+const MAJOR_PHASES = new Set<MajorEventPhase>(['idle', 'threat', 'fighting', 'result'])
+const FIGHT_OUTCOMES = new Set<PirateFightOutcome>(['crush', 'draw', 'win', 'wipe'])
+
+function sanitizeMajorEvent(raw: unknown, legacyPirate?: unknown): MajorEventState {
+  const fresh = emptyMajorEvent()
+  const src = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null
+  const pirate =
+    !src && legacyPirate && typeof legacyPirate === 'object'
+      ? (legacyPirate as Record<string, unknown>)
+      : null
+  const o = src ?? pirate
+  if (!o) return fresh
+
+  const phase = MAJOR_PHASES.has(o.phase as MajorEventPhase)
+    ? (o.phase as MajorEventPhase)
+    : 'idle'
+  const needsAck = Boolean(o.needsAck)
+  let kind: MajorEventKind = MAJOR_KINDS.has(o.kind as MajorEventKind)
+    ? (o.kind as MajorEventKind)
+    : 'none'
+  if (!src && pirate) {
+    kind = phase === 'idle' && !needsAck ? 'none' : 'pirate'
+  }
+  if (kind === 'none' && (phase !== 'idle' || needsAck)) {
+    kind = 'pirate'
+  }
+
+  const pending = o.pendingOutcome
+  return {
+    kind,
+    phase,
+    decideBy: Math.max(0, asNum(o.decideBy, 0)),
+    fightEndsAt: Math.max(0, asNum(o.fightEndsAt, 0)),
+    pendingOutcome:
+      typeof pending === 'string' && FIGHT_OUTCOMES.has(pending as PirateFightOutcome)
+        ? (pending as PirateFightOutcome)
+        : null,
+    resultTitle: typeof o.resultTitle === 'string' ? o.resultTitle : '',
+    resultBody: typeof o.resultBody === 'string' ? o.resultBody : '',
+    nextEligibleAt: Math.max(0, asNum(o.nextEligibleAt, 0)),
+    needsAck,
+    autoResolved: Boolean(o.autoResolved),
+    plagueUntil: Math.max(0, asNum(o.plagueUntil, 0)),
+    plagueSickMult:
+      typeof o.plagueSickMult === 'number' && o.plagueSickMult > 0 ? o.plagueSickMult : 1,
+    strayBreedId: typeof o.strayBreedId === 'string' ? o.strayBreedId : '',
+    strayCostFish: Math.max(0, Math.floor(asNum(o.strayCostFish, 0))),
+    strayCostCoins: Math.max(0, Math.floor(asNum(o.strayCostCoins, 0))),
+  }
 }
 
 function sanitizeGoal(raw: unknown, season: Season, day: number, history: string[]): SeasonGoal {
@@ -291,12 +365,21 @@ function sanitizeSlice(raw: unknown): PersistSlice | null {
           )
         : fresh.inventory,
     granary: {
-      level: Math.max(0, Math.floor(asNum(d.granary?.level, 0))),
+      level: Math.max(
+        0,
+        Math.min(GRANARY_MAX_LEVEL, Math.floor(asNum(d.granary?.level, 0))),
+      ),
       condition: Math.max(0, Math.min(100, asNum(d.granary?.condition, 100))),
     },
-    harbor: { level: Math.max(1, Math.floor(asNum(d.harbor?.level, 1))) },
-    boat: { level: Math.max(1, Math.floor(asNum(d.boat?.level, 1))) },
-    cottage: { level: Math.max(1, Math.floor(asNum(d.cottage?.level, 1))) },
+    harbor: {
+      level: Math.max(1, Math.min(HARBOR_MAX_LEVEL, Math.floor(asNum(d.harbor?.level, 1)))),
+    },
+    boat: {
+      level: Math.max(1, Math.min(BOAT_MAX_LEVEL, Math.floor(asNum(d.boat?.level, 1)))),
+    },
+    cottage: {
+      level: Math.max(1, Math.min(COTTAGE_MAX_LEVEL, Math.floor(asNum(d.cottage?.level, 1)))),
+    },
     boatVoyage:
       d.boatVoyage && typeof d.boatVoyage === 'object'
         ? {
@@ -328,6 +411,10 @@ function sanitizeSlice(raw: unknown): PersistSlice | null {
             nextAt: asNum(d.gameEvent.nextAt, fresh.gameEvent.nextAt),
           }
         : fresh.gameEvent,
+    majorEvent: sanitizeMajorEvent(
+      d.majorEvent,
+      (d as { pirateRaid?: unknown }).pirateRaid,
+    ),
     cloudCount: Math.max(0, Math.floor(asNum(d.cloudCount, 7))),
     cloudSpeed: Math.max(0.1, asNum(d.cloudSpeed, 1)),
     celestialSize: Math.max(0.5, asNum(d.celestialSize, 1.15)),
@@ -360,6 +447,7 @@ function sanitizeSlice(raw: unknown): PersistSlice | null {
             ]),
           )
         : {},
+    toolsWorn: asBool(d.toolsWorn, false),
   }
 }
 
@@ -422,13 +510,17 @@ export function attachAutoSave(store: AutoSaveStore, debounceMs = 1200): () => v
   })
 
   const onHide = () => flush()
-  window.addEventListener('pagehide', onHide)
-  window.addEventListener('beforeunload', onHide)
+  if (typeof window !== 'undefined') {
+    window.addEventListener('pagehide', onHide)
+    window.addEventListener('beforeunload', onHide)
+  }
 
   return () => {
     unsub()
-    window.removeEventListener('pagehide', onHide)
-    window.removeEventListener('beforeunload', onHide)
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('pagehide', onHide)
+      window.removeEventListener('beforeunload', onHide)
+    }
     if (timer) clearTimeout(timer)
   }
 }

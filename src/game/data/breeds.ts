@@ -26,7 +26,7 @@ export const CAT_BREEDS: CatBreed[] = [
     id: 'ink',
     name: '墨墨',
     title: '玄黑猫',
-    recruitPrice: 55,
+    recruitPrice: 95,
     palette: {
       pattern: 'smoke',
       fur: '#3a3a48',
@@ -46,7 +46,7 @@ export const CAT_BREEDS: CatBreed[] = [
     id: 'snow',
     name: '雪团',
     title: '纯白猫',
-    recruitPrice: 70,
+    recruitPrice: 90,
     palette: {
       pattern: 'solid',
       fur: '#fff8f0',
@@ -66,7 +66,7 @@ export const CAT_BREEDS: CatBreed[] = [
     id: 'tabby',
     name: '虎子',
     title: '棕虎斑',
-    recruitPrice: 85,
+    recruitPrice: 130,
     palette: {
       pattern: 'tabby',
       fur: '#d49840',
@@ -87,7 +87,7 @@ export const CAT_BREEDS: CatBreed[] = [
     id: 'calico',
     name: '花卷',
     title: '三花猫',
-    recruitPrice: 100,
+    recruitPrice: 150,
     palette: {
       pattern: 'calico',
       fur: '#f5efe4',
@@ -109,7 +109,7 @@ export const CAT_BREEDS: CatBreed[] = [
     id: 'siamese',
     name: '暹罗',
     title: '重点色暹罗',
-    recruitPrice: 120,
+    recruitPrice: 175,
     palette: {
       pattern: 'siamese',
       fur: '#e8dcc8',
@@ -142,15 +142,31 @@ export function createStarterCat(): CatInstance {
     role: 'farmer',
     roleLevel: 1,
     chopsToday: 0,
+    minesToday: 0,
     castsToday: 0,
     studiesToday: 0,
     craftsToday: 0,
     sick: false,
+    boostUntil: 0,
   }
 }
 
+/** 优先未拥有的可购品种；收齐后按拥有数量最少轮换（可重复招募至猫口上限） */
 export function nextRecruitBreed(ownedBreedIds: string[]): CatBreed | null {
-  return CAT_BREEDS.find((b) => b.recruitPrice > 0 && !ownedBreedIds.includes(b.id)) ?? null
+  const pool = CAT_BREEDS.filter((b) => b.recruitPrice > 0)
+  if (pool.length === 0) return null
+  const fresh = pool.find((b) => !ownedBreedIds.includes(b.id))
+  if (fresh) return fresh
+  let best = pool[0]!
+  let bestCount = Infinity
+  for (const b of pool) {
+    const n = ownedBreedIds.filter((id) => id === b.id).length
+    if (n < bestCount) {
+      best = b
+      bestCount = n
+    }
+  }
+  return best
 }
 
 /** Recruit: keep ≥1 farmer；优先补学者/船商与其他专精 */

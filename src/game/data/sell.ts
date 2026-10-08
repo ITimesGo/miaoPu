@@ -2,17 +2,26 @@ import { dailyFishNeed, tradePriceMult } from './careers'
 import { MERCHANT_FISH_PRICE } from './events'
 import { WHEAT_SELL_PRICE, voyageWoodPrice, type CatInstance } from '../types'
 
-export type SellResourceId = 'wheat' | 'ore' | 'wood' | 'fish'
+export type SellResourceId = 'wheat' | 'ore' | 'wood' | 'fish' | 'knowledge' | 'medicine'
 
 export type SellAmountMode = 'one' | 'half' | 'all'
 
-export const SELL_RESOURCES: SellResourceId[] = ['wheat', 'ore', 'wood', 'fish']
+export const SELL_RESOURCES: SellResourceId[] = [
+  'wheat',
+  'ore',
+  'wood',
+  'fish',
+  'knowledge',
+  'medicine',
+]
 
 export const SELL_LABEL: Record<SellResourceId, string> = {
   wheat: '小麦',
   ore: '矿石',
   wood: '木材',
   fish: '鱼肉',
+  knowledge: '知识',
+  medicine: '药品',
 }
 
 /** 相对正经贸易的折价回收基价（再乘船商半额加成） */
@@ -21,6 +30,8 @@ export const SELL_BASE_PRICE: Record<SellResourceId, number> = {
   ore: 5,
   wood: Math.max(1, Math.round(voyageWoodPrice(1) * 0.6)),
   fish: Math.max(1, Math.round(MERCHANT_FISH_PRICE * 0.5)),
+  knowledge: 10,
+  medicine: 20,
 }
 
 export const SELL_HINT: Record<SellResourceId, string> = {
@@ -28,6 +39,8 @@ export const SELL_HINT: Record<SellResourceId, string> = {
   ore: '升级材料，急用钱可抛',
   wood: '低于出海木材价',
   fish: '须留足明日口粮后再卖',
+  knowledge: '低于正经用途价值，急用钱可抛',
+  medicine: '治病优先；急用钱可少量回收',
 }
 
 export function sellUnitPrice(

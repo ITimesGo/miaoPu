@@ -11,11 +11,11 @@ import {
   HARBOR_POS,
   HOME_POS,
   MINE_POS,
-  ORE_SOFT_CAP,
   POND_POS,
   SEED_PACK_PRICE,
   sleepPosForCat,
   canChopAtMinute,
+  canMineAtMinute,
   canFishAtMinute,
   canStudyAtMinute,
   canCraftAtMinute,
@@ -28,11 +28,9 @@ import {
   type PlotState,
   type Season,
   type TreeState,
-  FISH_SOFT_CAP,
-  KNOWLEDGE_SOFT_CAP,
   KNOWLEDGE_PER_MEDICINE,
-  MEDICINE_SOFT_CAP,
 } from '../types'
+import { softCapFor, type SoftCapBuildings } from '../data/economy'
 
 export type CatTask =
   | { kind: 'sleep'; worldX: number; worldZ: number; behavior: CatBehavior }
@@ -228,11 +226,23 @@ function specialistIdle(input: {
   catIndex: number
   stock: number
   softCap: number
+  minesToday: number
   workKind: 'mine'
   workPos: { x: number; z: number }
   campOffset: { x: number; z: number }
 }): CatTask {
-  const { minuteOfDay, inventory, catId, catIndex, stock, softCap, workKind, workPos, campOffset } = input
+  const {
+    minuteOfDay,
+    inventory,
+    catId,
+    catIndex,
+    stock,
+    softCap,
+    minesToday,
+    workKind,
+    workPos,
+    campOffset,
+  } = input
   const hour = minuteOfDay / 60
   const isNight = hour < 6 || hour >= 20
   const workX = workPos.x + (catIndex % 3) * 0.55 + (Math.random() - 0.5) * 0.35
@@ -247,13 +257,13 @@ function specialistIdle(input: {
     return { kind: 'sleep', worldX: bed.x, worldZ: bed.z, behavior: 'sleep' }
   }
 
-  // 未满软顶时也可能摸鱼；快满了更爱闲逛
+  // 到顶提高休闲权重，但仍保留小概率继续干（溢出兑金）
   const leisureChance = stock >= softCap ? 0.78 : stock >= softCap * 0.5 ? 0.42 : 0.22
   if (Math.random() < leisureChance) {
     return pickSoftIdle({ inventory, campX, campZ })
   }
 
-  if (stock < softCap) {
+  if (canMineAtMinute(minuteOfDay, minesToday)) {
     return { kind: workKind, worldX: workX, worldZ: workZ, behavior: workKind }
   }
 
@@ -305,8 +315,9 @@ function fisherIdle(input: {
   catId: string
   catIndex: number
   castsToday: number
+  buildings: SoftCapBuildings
 }): CatTask {
-  const { minuteOfDay, inventory, catId, catIndex, castsToday } = input
+  const { minuteOfDay, inventory, catId, catIndex, castsToday, buildings } = input
   const hour = minuteOfDay / 60
   const isNight = hour < 6 || hour >= 20
   const stand = fishStand(catIndex)
@@ -321,7 +332,9 @@ function fisherIdle(input: {
   }
 
   const fish = inventory.fish ?? 0
-  if (canFishAtMinute(minuteOfDay, castsToday) && fish < FISH_SOFT_CAP && Math.random() >= 0.2) {
+  const fishCap = softCapFor('fish', buildings)!
+  const leisureChance = fish >= fishCap ? 0.78 : fish >= fishCap * 0.5 ? 0.35 : 0.2
+  if (canFishAtMinute(minuteOfDay, castsToday) && Math.random() >= leisureChance) {
     return {
       kind: 'fish',
       worldX: stand.worldX + (Math.random() - 0.5) * 0.25,
@@ -339,8 +352,9 @@ function scholarIdle(input: {
   catId: string
   catIndex: number
   studiesToday: number
+  buildings: SoftCapBuildings
 }): CatTask {
-  const { minuteOfDay, inventory, catId, catIndex, studiesToday } = input
+  const { minuteOfDay, inventory, catId, catIndex, studiesToday, buildings } = input
   const hour = minuteOfDay / 60
   const isNight = hour < 6 || hour >= 20
   const campX = STUDY_POS.x + (catIndex % 2) * 0.45
@@ -354,7 +368,10 @@ function scholarIdle(input: {
   }
 
   const knowledge = inventory.knowledge ?? 0
-  if (canStudyAtMinute(minuteOfDay, studiesToday) && knowledge < KNOWLEDGE_SOFT_CAP && Math.random() >= 0.15) {
+  const knowCap = softCapFor('knowledge', buildings)!
+  const leisureChance =
+    knowledge >= knowCap ? 0.78 : knowledge >= knowCap * 0.5 ? 0.32 : 0.15
+  if (canStudyAtMinute(minuteOfDay, studiesToday) && Math.random() >= leisureChance) {
     return {
       kind: 'study',
       worldX: campX + (Math.random() - 0.5) * 0.3,
@@ -407,8 +424,9 @@ function doctorIdle(input: {
   catId: string
   catIndex: number
   craftsToday: number
+  buildings: SoftCapBuildings
 }): CatTask {
-  const { minuteOfDay, inventory, catId, catIndex, craftsToday } = input
+  const { minuteOfDay, inventory, catId, catIndex, craftsToday, buildings } = input
   const hour = minuteOfDay / 60
   const isNight = hour < 6 || hour >= 20
   const campX = STUDY_POS.x - 0.8 - (catIndex % 2) * 0.35
@@ -423,11 +441,13 @@ function doctorIdle(input: {
 
   const knowledge = inventory.knowledge ?? 0
   const medicine = inventory.medicine ?? 0
+  const medCap = softCapFor('medicine', buildings)!
+  const leisureChance =
+    medicine >= medCap ? 0.78 : medicine >= medCap * 0.5 ? 0.32 : 0.15
   if (
     canCraftAtMinute(minuteOfDay, craftsToday) &&
     knowledge >= KNOWLEDGE_PER_MEDICINE &&
-    medicine < MEDICINE_SOFT_CAP &&
-    Math.random() >= 0.15
+    Math.random() >= leisureChance
   ) {
     return {
       kind: 'craft',
@@ -490,9 +510,11 @@ export function pickCatTask(input: {
   role: CatRole
   farmerCount: number
   chopsToday: number
+  minesToday: number
   castsToday: number
   studiesToday: number
   craftsToday: number
+  buildings: SoftCapBuildings
   merchantHere?: boolean
 }): CatTask {
   const {
@@ -508,9 +530,11 @@ export function pickCatTask(input: {
     role,
     farmerCount,
     chopsToday,
+    minesToday,
     castsToday,
     studiesToday,
     craftsToday,
+    buildings,
     merchantHere = false,
   } = input
   const ore = inventory.ore ?? 0
@@ -524,7 +548,8 @@ export function pickCatTask(input: {
       catId,
       catIndex,
       stock: ore,
-      softCap: ORE_SOFT_CAP,
+      softCap: softCapFor('ore', buildings)!,
+      minesToday,
       workKind: 'mine',
       workPos: MINE_POS,
       campOffset: { x: 1.2, z: 1.4 },
@@ -536,11 +561,11 @@ export function pickCatTask(input: {
   }
 
   if (role === 'fisher') {
-    return fisherIdle({ minuteOfDay, inventory, catId, catIndex, castsToday })
+    return fisherIdle({ minuteOfDay, inventory, catId, catIndex, castsToday, buildings })
   }
 
   if (role === 'scholar') {
-    return scholarIdle({ minuteOfDay, inventory, catId, catIndex, studiesToday })
+    return scholarIdle({ minuteOfDay, inventory, catId, catIndex, studiesToday, buildings })
   }
 
   if (role === 'sailor') {
@@ -548,7 +573,7 @@ export function pickCatTask(input: {
   }
 
   if (role === 'doctor') {
-    return doctorIdle({ minuteOfDay, inventory, catId, catIndex, craftsToday })
+    return doctorIdle({ minuteOfDay, inventory, catId, catIndex, craftsToday, buildings })
   }
 
   if (role === 'civilian') {

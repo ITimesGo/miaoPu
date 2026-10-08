@@ -3,7 +3,7 @@ import { useEffect } from 'react'
 import { useGameStore } from '../../game/state/gameStore'
 
 /** 单行优先；超出后自动折成最多约两行 */
-const BUBBLE_MAX_WIDTH = 220
+const BUBBLE_MAX_WIDTH = 280
 
 export function CatSpeechBubble({ catId }: { catId: string }) {
   const bubble = useGameStore((s) => s.speechBubbles.find((b) => b.catId === catId))
@@ -44,14 +44,14 @@ export function CatSpeechBubble({ catId }: { catId: string }) {
           display: 'inline-block',
           width: 'max-content',
           maxWidth: BUBBLE_MAX_WIDTH,
-          padding: '6px 11px',
-          borderRadius: 10,
+          padding: '8px 14px',
+          borderRadius: 12,
           background: 'rgba(245, 240, 230, 0.94)',
           border: '1px solid rgba(80, 100, 70, 0.35)',
           boxShadow: '0 2px 8px rgba(0,0,0,0.22)',
           color: '#243028',
-          fontSize: 12,
-          lineHeight: 1.4,
+          fontSize: 16,
+          lineHeight: 1.45,
           fontWeight: 600,
           textAlign: 'center',
           whiteSpace: 'normal',

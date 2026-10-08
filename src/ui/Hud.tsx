@@ -3,12 +3,18 @@ import { getBreed } from '../game/data/breeds'
 import { CAT_BEHAVIOR_LABEL } from '../game/systems/catFarmAI'
 import { granaryCapacity } from '../game/data/shop'
 import { absoluteGameMinute, weatherLabel } from '../game/data/weather'
-import { dailyFishNeed, ROLE_SHORT, clampRoleLevel } from '../game/data/careers'
+import { dailyFishNeed, medicinePerCure, ROLE_SHORT, clampRoleLevel } from '../game/data/careers'
 import { goalRewardText, goalTitle, liveGoalProgress } from '../game/data/goals'
 import { eventAlertText } from '../game/data/events'
-import { catCapForCottage } from '../game/types'
+import { coinSoftCap, softCapFor } from '../game/data/economy'
+import { heatingWoodNeed } from '../game/data/heating'
+import { countToolWorkers, toolMaintOreNeed } from '../game/data/tools'
+import {
+  catCapForCottage,
+  MINUTES_PER_DAY,
+  type Season,
+} from '../game/types'
 import { useGameStore } from '../game/state/gameStore'
-import { MINUTES_PER_DAY, type Season } from '../game/types'
 import { ShopToolbar } from './ShopToolbar'
 
 const SEASON_LABEL: Record<Season, string> = {
@@ -44,7 +50,7 @@ const panel: CSSProperties = {
   position: 'absolute',
   top: 12,
   left: 12,
-  width: 286,
+  width: 300,
   padding: '10px 11px 9px',
   background: 'linear-gradient(160deg, rgba(22, 36, 28, 0.86), rgba(12, 22, 18, 0.82))',
   borderRadius: 12,
@@ -123,6 +129,7 @@ export function Hud() {
   const weather = useGameStore((s) => s.weather)
   const rainbowUntil = useGameStore((s) => s.rainbowUntil)
   const gameEvent = useGameStore((s) => s.gameEvent)
+  const majorEvent = useGameStore((s) => s.majorEvent)
   const minuteOfDay = useGameStore((s) => Math.floor(s.minuteOfDay))
   const coins = useGameStore((s) => s.coins)
   const timeScale = useGameStore((s) => s.timeScale)
@@ -138,6 +145,7 @@ export function Hud() {
   const boatVoyage = useGameStore((s) => s.boatVoyage)
   const seasonGoal = useGameStore((s) => s.seasonGoal)
   const statusMessage = useGameStore((s) => s.statusMessage)
+  const toolsWorn = useGameStore((s) => s.toolsWorn)
   const gameOver = useGameStore((s) => s.gameOver)
   const setTimeScale = useGameStore((s) => s.setTimeScale)
   const restartGame = useGameStore((s) => s.restartGame)
@@ -146,11 +154,31 @@ export function Hud() {
   const night = isNight(minuteOfDay)
   const cap = granaryCapacity(granary)
   const catCap = catCapForCottage(cottage.level)
+  const buildings = {
+    cottage: cottage.level,
+    harbor: harbor.level,
+    boat: boat.level,
+    granary: granary.level,
+  }
+  const coinCap = coinSoftCap(buildings)
+  const oreCap = softCapFor('ore', buildings)!
+  const woodCap = softCapFor('wood', buildings)!
+  const fishCap = softCapFor('fish', buildings)!
+  const knowCap = softCapFor('knowledge', buildings)!
+  const medCap = softCapFor('medicine', buildings)!
+  const toyCap = softCapFor('toy', buildings)!
+  const snackCap = softCapFor('snack', buildings)!
   const leadLabel = CAT_BEHAVIOR_LABEL[leadBehavior] ?? leadBehavior
   const yieldPct = Math.round((1 + Math.max(0, catCount - 1) * 0.5) * 100)
   const fish = inventory.fish ?? 0
   const fishNeed = dailyFishNeed(cats)
   const fishShort = fish < fishNeed
+  const wood = inventory.wood ?? 0
+  const woodNeed = heatingWoodNeed(catCount, season)
+  const woodShort = wood < woodNeed
+  const ore = inventory.ore ?? 0
+  const oreNeed = toolMaintOreNeed(cats)
+  const oreShort = oreNeed > 0 && ore < oreNeed
   const eventKind = gameEvent?.kind ?? 'none'
   const eventActive = eventKind !== 'none'
   const alertText = eventActive ? eventAlertText(eventKind, season) : ''
@@ -158,9 +186,14 @@ export function Hud() {
   const seeds = inventory.wheat_seed ?? 0
   const seedShort = season !== 'winter' && seeds <= 0
   const med = inventory.medicine ?? 0
-  const medShort = sickCount > 0 && med < sickCount
+  const medNeed = sickCount * medicinePerCure(cats)
+  const medShort = sickCount > 0 && med < medNeed
   const wheat = inventory.wheat ?? 0
   const nowAbs = absoluteGameMinute(day, minuteOfDay)
+  const plagueDaysLeft =
+    majorEvent.plagueUntil > nowAbs
+      ? Math.max(1, Math.ceil((majorEvent.plagueUntil - nowAbs) / MINUTES_PER_DAY))
+      : 0
   const voyageEtaMin =
     boatVoyage.phase === 'away' ? Math.max(0, Math.ceil((boatVoyage.returnAt - nowAbs) / 60)) : 0
   const voyageCooldownMin =
@@ -246,26 +279,85 @@ export function Hud() {
         </div>
 
         <div style={row}>
-          <Pill label="金币" value={coins} tone="#f0d78c" />
-          <Pill label="矿石" value={inventory.ore ?? 0} />
-          <Pill label="木材" value={inventory.wood ?? 0} />
-          <Pill label="鱼肉" value={fishShort ? `${fish}/${fishNeed}` : fish} warn={fishShort} />
-          <Pill label="知识" value={inventory.knowledge ?? 0} tone="#a8d4ff" />
-          <Pill label="药品" value={med} warn={medShort} tone="#e8a0c8" />
+          <Pill
+            label="金币"
+            value={`${coins}/${coinCap}`}
+            tone="#f0d78c"
+            warn={coins >= coinCap}
+          />
+          <Pill
+            label="矿石"
+            value={`${ore}/${oreCap}`}
+            warn={oreShort || toolsWorn || ore >= oreCap}
+          />
+          <Pill
+            label="木材"
+            value={`${wood}/${woodCap}`}
+            warn={woodShort || wood >= woodCap}
+          />
+          <Pill
+            label="鱼肉"
+            value={`${fish}/${fishCap}`}
+            warn={fishShort || fish >= fishCap}
+          />
+          <Pill
+            label="知识"
+            value={`${inventory.knowledge ?? 0}/${knowCap}`}
+            tone="#a8d4ff"
+            warn={(inventory.knowledge ?? 0) >= knowCap}
+          />
+          <Pill
+            label="药品"
+            value={`${med}/${medCap}`}
+            warn={medShort || med >= medCap}
+            tone="#e8a0c8"
+          />
         </div>
 
         <div style={row}>
-          <Pill label="小麦" value={`${wheat}/${cap}`} />
+          <Pill label="小麦" value={`${wheat}/${cap}`} warn={wheat >= cap} />
           <Pill label="麦种" value={seeds} warn={seedShort} />
-          <Pill label="玩具" value={inventory.toy ?? 0} />
-          <Pill label="零食" value={inventory.snack ?? 0} />
-          <Pill label="猫群" value={`${catCount}/${catCap}`} warn={sickCount > 0} />
+          <Pill
+            label="玩具"
+            value={`${inventory.toy ?? 0}/${toyCap}`}
+            warn={(inventory.toy ?? 0) >= toyCap}
+          />
+          <Pill
+            label="零食"
+            value={`${inventory.snack ?? 0}/${snackCap}`}
+            warn={(inventory.snack ?? 0) >= snackCap}
+          />
+          <Pill
+            label="猫群"
+            value={`${catCount}/${catCap}`}
+            warn={sickCount > 0 || catCount >= catCap}
+          />
           <Pill label="产量" value={`${yieldPct}%`} />
         </div>
+        {fishShort && (
+          <div style={{ marginTop: 4, fontSize: 10, color: '#ffb090', fontWeight: 600 }}>
+            鱼肉偏低：库存 {fish}，明日约需 {fishNeed}
+          </div>
+        )}
+        {woodShort && (
+          <div style={{ marginTop: 4, fontSize: 10, color: '#ffb090', fontWeight: 600 }}>
+            木材偏低：库存 {wood}，{season === 'winter' ? '冬日全天' : '夜间'}取暖约需 {woodNeed}
+          </div>
+        )}
+        {(oreShort || toolsWorn) && (
+          <div style={{ marginTop: 4, fontSize: 10, color: '#ffb090', fontWeight: 600 }}>
+            {toolsWorn
+              ? '工具偏钝：矿工/伐木/渔夫产量降低，日结备足矿石可修好'
+              : `矿石偏低：库存 ${ore}，工具保养约需 ${oreNeed}（户外工 ${countToolWorkers(cats)}）`}
+          </div>
+        )}
 
         <div style={{ ...row, marginTop: 7, gap: 4 }}>
           <TinyTag>屋 {cottage.level}</TinyTag>
-          <TinyTag>仓 {granary.level}</TinyTag>
+          <TinyTag>
+            仓 {granary.level}
+            {granary.level > 0 ? ` ·${Math.floor(granary.condition)}%` : ''}
+          </TinyTag>
           <TinyTag>港 {harbor.level}</TinyTag>
           <TinyTag>船 {boat.level}</TinyTag>
           {cats.map((c) => {
@@ -330,6 +422,16 @@ export function Hud() {
               </>
             )}
           </div>
+          {plagueDaysLeft > 0 && (
+            <div style={{ marginTop: 3, color: '#e8a090', fontWeight: 600 }}>
+              疫病潮 · 约剩 {plagueDaysLeft} 日
+              {majorEvent.plagueSickMult < 1
+                ? '（风险降低）'
+                : majorEvent.plagueSickMult > 1
+                  ? '（风险升高）'
+                  : ''}
+            </div>
+          )}
         </div>
 
         <div
@@ -399,7 +501,7 @@ export function Hud() {
         </div>
         <div style={{ fontSize: 11, opacity: 0.75, marginTop: 10, marginBottom: 5 }}>流速</div>
         <div style={{ display: 'flex', gap: 5 }}>
-          {[1, 2, 4, 8].map((scale) => (
+          {(import.meta.env.DEV ? [1, 2, 4, 8] : [1, 2]).map((scale) => (
             <button
               key={scale}
               type="button"

@@ -47,3 +47,15 @@ body,
   height: 0;
   width: 0;
 }
+
+/** 商店等可点条目：悬停 / 按下反馈（仅内部变化，避免被 overflow 裁切） */
+.miaopu-press {
+  transition: transform 0.1s ease, filter 0.1s ease;
+}
+.miaopu-press:hover:not(:disabled) {
+  filter: brightness(1.35) saturate(1.08);
+}
+.miaopu-press:active:not(:disabled) {
+  transform: scale(0.98);
+  filter: brightness(1.45) saturate(1.1);
+}

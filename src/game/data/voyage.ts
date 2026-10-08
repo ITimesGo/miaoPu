@@ -2,7 +2,6 @@ import {
   BOAT_FISH_CAP,
   BOAT_WOOD_CAP,
   emptyBoatVoyage,
-  MEDICINE_SOFT_CAP,
   sailorMedicineLoot,
   voyageCooldownMinutes,
   voyageDurationMinutes,
@@ -13,6 +12,11 @@ import {
   type LevelState,
 } from '../types'
 import { clampRoleLevel, tradePriceMult } from './careers'
+import {
+  applyInventoryGain,
+  formatOverflowStatus,
+  type SoftCapBuildings,
+} from './economy'
 
 export interface VoyageContext {
   nowAbs: number
@@ -22,6 +26,7 @@ export interface VoyageContext {
   harbor: LevelState
   boat: LevelState
   boatVoyage: BoatVoyage
+  buildings: SoftCapBuildings
 }
 
 export function canDepartVoyage(ctx: VoyageContext): boolean {
@@ -94,20 +99,25 @@ export function settleVoyageReturn(ctx: VoyageContext): {
     (a, b) => clampRoleLevel(b.roleLevel) - clampRoleLevel(a.roleLevel),
   )[0]
   const medLoot = topSailor ? sailorMedicineLoot(topSailor.roleLevel) : 0
-  const medNow = ctx.inventory.medicine ?? 0
-  const medAdd = Math.min(medLoot, Math.max(0, MEDICINE_SOFT_CAP - medNow))
-  const coins = ctx.boatVoyage.expectedCoins
+  // coins 从 0 起算：仅累计药品溢出兑金；航行卖货金由 store 叠到现有金币后再夹帽
+  const gained = applyInventoryGain(
+    ctx.inventory,
+    0,
+    medLoot > 0 ? { medicine: medLoot } : {},
+    ctx.buildings,
+  )
+  const coinsDelta = ctx.boatVoyage.expectedCoins + gained.coins
   const cooldown = voyageCooldownMinutes(ctx.harbor.level)
-  const parts = [`+${coins} 金`]
+  const parts = [`预计 +${ctx.boatVoyage.expectedCoins} 金`]
   if (ctx.boatVoyage.cargoFish > 0) parts.unshift(`卸下鱼货`)
-  if (medAdd > 0) parts.push(`带回药品 ×${medAdd}`)
+  const medAdded = gained.added.medicine ?? 0
+  if (medAdded > 0) parts.push(`带回药品 ×${medAdded}`)
+  const overflowNote = formatOverflowStatus(gained)
+  if (overflowNote) parts.push(overflowNote)
 
   return {
-    coinsDelta: coins,
-    inventory: {
-      ...ctx.inventory,
-      medicine: medNow + medAdd,
-    },
+    coinsDelta,
+    inventory: gained.inventory,
     boatVoyage: emptyBoatVoyage(ctx.nowAbs + cooldown),
     statusMessage: `货船回港：${parts.join(' · ')}`,
   }

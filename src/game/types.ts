@@ -71,6 +71,8 @@ export interface CatInstance {
   roleLevel: number
   /** 今日已砍树次数（跨日清零） */
   chopsToday: number
+  /** 今日已采矿次数（跨日清零） */
+  minesToday: number
   /** 今日已钓鱼次数（跨日清零） */
   castsToday: number
   /** 今日已研读次数（跨日清零） */
@@ -79,6 +81,8 @@ export interface CatInstance {
   craftsToday: number
   /** 是否生病：需药品治疗，未治翌日死亡；生病期间不能干活（医生除外） */
   sick: boolean
+  /** 玩具/零食开心加成结束的绝对游戏分钟；0 = 无 */
+  boostUntil: number
 }
 
 export interface PlotState {
@@ -199,7 +203,7 @@ export function cottageDoorThreshold() {
 /** 日夜切换：6 点起、20 点睡；进出门错开间隔（游戏分钟） */
 export const DAY_START_MINUTE = 6 * 60
 export const NIGHT_START_MINUTE = 20 * 60
-export const DOOR_STAGGER_MINUTES = 28
+export const DOOR_STAGGER_MINUTES = 18
 
 export function exitTurnMinute(catIndex: number) {
   return DAY_START_MINUTE + catIndex * DOOR_STAGGER_MINUTES
@@ -213,127 +217,178 @@ export const GRANARY_CAPACITY: Record<number, number> = {
   3: 100,
   4: 160,
   5: 240,
+  6: 340,
+  7: 460,
+  8: 600,
 }
-export const GRANARY_MAX_LEVEL = 5
-export const GRANARY_BUY_PRICE = 40
-export const GRANARY_BUY_ORE = 0
-export const GRANARY_BUY_WOOD = 0
-/** 升级目标等级 → 金币（逐级变贵） */
+export const GRANARY_MAX_LEVEL = 8
+export const GRANARY_BUY_PRICE = 105
+export const GRANARY_BUY_ORE = 3
+export const GRANARY_BUY_WOOD = 5
+/** 升级目标等级 → 金币（前期轻度抬高；Lv4+ 再叠陡坡） */
 export const GRANARY_UPGRADE_PRICE: Record<number, number> = {
-  2: 80,
-  3: 150,
-  4: 260,
-  5: 420,
+  2: 190,
+  3: 350,
+  4: 690,
+  5: 1130,
+  6: 1720,
+  7: 2600,
+  8: 3880,
 }
 export const GRANARY_UPGRADE_ORE: Record<number, number> = {
-  2: 2,
-  3: 4,
-  4: 8,
-  5: 14,
+  2: 6,
+  3: 11,
+  4: 21,
+  5: 35,
+  6: 49,
+  7: 67,
+  8: 88,
 }
 export const GRANARY_UPGRADE_WOOD: Record<number, number> = {
-  2: 1,
-  3: 2,
-  4: 4,
-  5: 8,
+  2: 5,
+  3: 9,
+  4: 18,
+  5: 27,
+  6: 37,
+  7: 51,
+  8: 69,
 }
 export const GRANARY_UPGRADE_KNOWLEDGE: Record<number, number> = {
-  2: 3,
-  3: 6,
-  4: 10,
-  5: 16,
+  2: 8,
+  3: 15,
+  4: 26,
+  5: 41,
+  6: 58,
+  7: 78,
+  8: 108,
 }
-export const GRANARY_REPAIR_COST = 18
+export const GRANARY_REPAIR_COST = 45
 export const GRANARY_REPAIR_AMOUNT = 45
 export const GRANARY_DAILY_DECAY = 8
 
-export const HARBOR_MAX_LEVEL = 5
+export const HARBOR_MAX_LEVEL = 8
 export const HARBOR_UPGRADE_PRICE: Record<number, number> = {
-  2: 90,
-  3: 160,
-  4: 280,
-  5: 450,
+  2: 225,
+  3: 400,
+  4: 745,
+  5: 1230,
+  6: 1875,
+  7: 2765,
+  8: 4050,
 }
 export const HARBOR_UPGRADE_ORE: Record<number, number> = {
-  2: 3,
-  3: 5,
-  4: 9,
-  5: 15,
+  2: 10,
+  3: 17,
+  4: 32,
+  5: 47,
+  6: 64,
+  7: 85,
+  8: 114,
 }
 export const HARBOR_UPGRADE_WOOD: Record<number, number> = {
-  2: 2,
-  3: 3,
-  4: 5,
-  5: 9,
+  2: 8,
+  3: 12,
+  4: 23,
+  5: 35,
+  6: 49,
+  7: 67,
+  8: 88,
 }
 export const HARBOR_UPGRADE_KNOWLEDGE: Record<number, number> = {
-  2: 4,
-  3: 7,
-  4: 12,
-  5: 18,
+  2: 10,
+  3: 17,
+  4: 32,
+  5: 47,
+  6: 67,
+  7: 91,
+  8: 125,
 }
 
-export const BOAT_MAX_LEVEL = 5
+export const BOAT_MAX_LEVEL = 8
 export const BOAT_UPGRADE_PRICE: Record<number, number> = {
-  2: 70,
-  3: 130,
-  4: 220,
-  5: 360,
+  2: 175,
+  3: 325,
+  4: 605,
+  5: 1020,
+  6: 1565,
+  7: 2360,
+  8: 3545,
 }
 export const BOAT_UPGRADE_ORE: Record<number, number> = {
-  2: 2,
-  3: 4,
-  4: 7,
-  5: 12,
+  2: 6,
+  3: 12,
+  4: 23,
+  5: 39,
+  6: 52,
+  7: 69,
+  8: 95,
 }
 export const BOAT_UPGRADE_WOOD: Record<number, number> = {
-  2: 2,
-  3: 4,
-  4: 6,
-  5: 10,
+  2: 8,
+  3: 14,
+  4: 26,
+  5: 41,
+  6: 55,
+  7: 73,
+  8: 95,
 }
 export const BOAT_UPGRADE_KNOWLEDGE: Record<number, number> = {
-  2: 3,
-  3: 6,
-  4: 10,
-  5: 15,
+  2: 8,
+  3: 15,
+  4: 28,
+  5: 44,
+  6: 64,
+  7: 89,
+  8: 121,
 }
 
 /** 小屋：扩容猫口 + 升级耗知识 */
-export const COTTAGE_MAX_LEVEL = 5
+export const COTTAGE_MAX_LEVEL = 8
 export const COTTAGE_UPGRADE_PRICE: Record<number, number> = {
-  2: 60,
-  3: 110,
-  4: 190,
-  5: 300,
+  2: 150,
+  3: 275,
+  4: 545,
+  5: 900,
+  6: 1405,
+  7: 2115,
+  8: 3205,
 }
 export const COTTAGE_UPGRADE_ORE: Record<number, number> = {
-  2: 1,
-  3: 3,
-  4: 5,
-  5: 9,
+  2: 5,
+  3: 10,
+  4: 20,
+  5: 33,
+  6: 45,
+  7: 63,
+  8: 86,
 }
 export const COTTAGE_UPGRADE_WOOD: Record<number, number> = {
-  2: 2,
-  3: 4,
-  4: 7,
-  5: 11,
+  2: 6,
+  3: 12,
+  4: 23,
+  5: 35,
+  6: 49,
+  7: 67,
+  8: 88,
 }
 export const COTTAGE_UPGRADE_KNOWLEDGE: Record<number, number> = {
-  2: 4,
-  3: 8,
-  4: 13,
-  5: 20,
+  2: 10,
+  3: 17,
+  4: 32,
+  5: 50,
+  6: 73,
+  7: 101,
+  8: 137,
 }
 
-/** 小屋等级 → 猫口上限（Lv1=4 … Lv5=8） */
+/** 小屋等级 → 猫口上限（Lv1=5 … Lv8=12） */
 export function catCapForCottage(cottageLevel: number): number {
   const lv = Math.max(1, Math.min(COTTAGE_MAX_LEVEL, Math.floor(cottageLevel || 1)))
-  return 3 + lv
+  return 4 + lv
 }
 
-/** 绝对上限（兼容旧引用） */
-export const MAX_CATS = 8
+/** 绝对上限（出门错峰等；与满级猫口对齐） */
+export const MAX_CATS = 12
 
 /** 职业等级 */
 export const ROLE_MAX_LEVEL = 5
@@ -341,10 +396,10 @@ export const ROLE_YIELD_PER_LEVEL = 0.35
 export const ROLE_CONSUME_PER_LEVEL = 0.25
 /** 职业升级目标等级 → 知识 */
 export const ROLE_UPGRADE_KNOWLEDGE: Record<number, number> = {
-  2: 4,
-  3: 8,
-  4: 14,
-  5: 22,
+  2: 5,
+  3: 10,
+  4: 17,
+  5: 27,
 }
 
 /** 货船出海：装鱼肉 + 少量木材，换金币 */
@@ -367,6 +422,9 @@ export const BOAT_FISH_CAP: Record<number, number> = {
   3: 8,
   4: 10,
   5: 14,
+  6: 18,
+  7: 22,
+  8: 28,
 }
 export const BOAT_WOOD_CAP: Record<number, number> = {
   1: 1,
@@ -374,6 +432,9 @@ export const BOAT_WOOD_CAP: Record<number, number> = {
   3: 2,
   4: 3,
   5: 4,
+  6: 5,
+  7: 6,
+  8: 8,
 }
 
 /** 鱼肉出海单价（港口越高越贵） */
@@ -405,13 +466,15 @@ export function emptyBoatVoyage(readyAt = 0): BoatVoyage {
 }
 
 /** 物品价固定 */
-export const SEED_PACK_PRICE = 12
+export const SEED_PACK_PRICE = 15
 export const SEED_PACK_AMOUNT = 6
-export const TOY_PRICE = 15
-export const SNACK_PRICE = 10
+export const TOY_PRICE = 50
+export const SNACK_PRICE = 40
 
 export const MINE_ORE_YIELD = 2
 export const ORE_SOFT_CAP = 40
+/** 每只猫每天最多采矿次数 */
+export const MINE_DAILY_LIMIT = 5
 export const CHOP_WOOD_YIELD = 2
 export const WOOD_SOFT_CAP = 40
 /** 每只猫每天最多砍几棵树 */
@@ -424,7 +487,7 @@ export const CHOP_SLOT_MINUTES = Math.floor(
 )
 
 export const FISH_YIELD = 2
-export const FISH_SOFT_CAP = 40
+export const FISH_SOFT_CAP = 48
 export const FISH_DAILY_LIMIT = 5
 /** 每只猫每天日结消耗的鱼肉（再乘职业日耗倍率） */
 export const FISH_DAILY_PER_CAT = 1
@@ -468,6 +531,13 @@ export function canChopAtMinute(minuteOfDay: number, chopsToday: number): boolea
   return minuteOfDay >= workReadyAtMinute(chopsToday)
 }
 
+export function canMineAtMinute(minuteOfDay: number, minesToday: number): boolean {
+  if (minesToday >= MINE_DAILY_LIMIT) return false
+  const hour = minuteOfDay / 60
+  if (hour < 6 || hour >= 20) return false
+  return minuteOfDay >= workReadyAtMinute(minesToday)
+}
+
 export function canFishAtMinute(minuteOfDay: number, castsToday: number): boolean {
   if (castsToday >= FISH_DAILY_LIMIT) return false
   const hour = minuteOfDay / 60
@@ -503,5 +573,5 @@ export function fishStand(catIndex: number) {
 export const YIELD_BONUS_PER_CAT = 0.5
 /** 每多一只猫，生长速度 +25% */
 export const GROW_BONUS_PER_CAT = 0.25
-/** 招募价相对基础价的递增系数（按当前猫数） */
-export const RECRUIT_PRICE_SCALE = 0.55
+/** 招募价复合倍率：实际价 = 基础价 × GROWTH^当前猫数 */
+export const RECRUIT_PRICE_GROWTH = 1.35

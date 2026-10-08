@@ -21,15 +21,25 @@ import {
   clampRoleLevel,
   countByRole,
   roleBehavior,
-  scaledYield,
+  roleLevelAfterReassign,
   studyYield,
   medicineCraftYield,
   tradePriceMult,
+  workYield,
+  comfortYieldMult,
+  COMFORT_BOOST_MINUTES,
+  COMFORT_BOOST_MULT,
   sickChanceForRole,
+  medicinePerCure,
   SEED_SHORTAGE_SICK_BONUS,
   SEED_SHORTAGE_DEATH_CHANCE,
   FISH_SEVERE_SHORTAGE_DEATH_CHANCE,
 } from '../data/careers'
+import { COLD_SHORTAGE_SICK_BONUS, heatingWoodNeed } from '../data/heating'
+import {
+  applyToolsWornYield,
+  toolMaintOreNeed,
+} from '../data/tools'
 import {
   emptyGameEvent,
   eventEndMessage,
@@ -64,6 +74,44 @@ import {
   type SpeechBubble,
 } from '../systems/catDialogue'
 import {
+  applyFightOutcome,
+  applyPirateTribute,
+  PIRATE_FIGHT_MS,
+  rollFightOutcome,
+  rollPirateChance,
+} from '../data/pirates'
+import {
+  applyPlagueEndure,
+  applyPlagueIsolate,
+  applyStrayReject,
+  canAffordStray,
+  canRollPlague,
+  canRollStray,
+  clearDecisionWindow,
+  decisionWindowBusy,
+  expirePlagueIfNeeded,
+  MAJOR_COOLDOWN_MINUTES,
+  PIRATE_P_WEIGHT,
+  pickMajorEventKind,
+  pirateWealthEligible,
+  plagueIsolateMedicineCost,
+  plagueChance,
+  rollStrayOffer,
+  startMajorThreat,
+  strayChance,
+  type MajorEventState,
+} from '../data/majorEvents'
+import {
+  applyCoinGain,
+  applyComfortConsume,
+  applyInventoryGain,
+  applyWheatHarvestGain,
+  coinSoftCap,
+  formatOverflowStatus,
+  softCapFor,
+  type SoftCapBuildings,
+} from '../data/economy'
+import {
   attachAutoSave,
   clearSavedGame,
   createFreshPersistSlice,
@@ -96,7 +144,6 @@ import {
   CHOP_DAILY_LIMIT,
   DAYS_PER_SEASON,
   FARM_SIZE,
-  FISH_SOFT_CAP,
   FISH_YIELD,
   FISH_DAILY_LIMIT,
   GAME_MINUTES_PER_REAL_SECOND,
@@ -117,14 +164,12 @@ import {
   HARBOR_UPGRADE_PRICE,
   HARBOR_UPGRADE_WOOD,
   HOME_POS,
-  KNOWLEDGE_SOFT_CAP,
   KNOWLEDGE_PER_MEDICINE,
-  MEDICINE_SOFT_CAP,
   CRAFT_DAILY_LIMIT,
   sailorMedicineLoot,
   MINE_ORE_YIELD,
+  MINE_DAILY_LIMIT,
   MINUTES_PER_DAY,
-  ORE_SOFT_CAP,
   ROLE_UPGRADE_KNOWLEDGE,
   SEED_PACK_AMOUNT,
   SEED_PACK_PRICE,
@@ -132,7 +177,6 @@ import {
   STUDY_DAILY_LIMIT,
   TOY_PRICE,
   WHEAT_SELL_PRICE,
-  WOOD_SOFT_CAP,
   type CatBehavior,
   type CatInstance,
   type CatRole,
@@ -154,6 +198,20 @@ function emptyPlots(): PlotState[][] {
       watered: false,
     })),
   )
+}
+
+function softCapBuildings(s: {
+  cottage: LevelState
+  harbor: LevelState
+  boat: LevelState
+  granary: GranaryState
+}): SoftCapBuildings {
+  return {
+    cottage: s.cottage.level,
+    harbor: s.harbor.level,
+    boat: s.boat.level,
+    granary: s.granary.level,
+  }
 }
 
 function clonePlots(plots: PlotState[][]): PlotState[][] {
@@ -281,6 +339,7 @@ function applyGoalIfMet(
   cottage: LevelState,
   harbor: LevelState,
   boat: LevelState,
+  granary: GranaryState,
   cats: CatInstance[],
   history: string[],
 ): {
@@ -297,15 +356,26 @@ function applyGoalIfMet(
   if (!isGoalMet(goal, snap)) {
     return { goal, inventory, coins, note: null, goalHistory: history }
   }
-  const inv = { ...inventory }
-  inv.medicine = (inv.medicine ?? 0) + goal.rewardMedicine
-  inv.knowledge = (inv.knowledge ?? 0) + goal.rewardKnowledge
+  const buildings = softCapBuildings({ cottage, harbor, boat, granary })
+  const gains: Record<string, number> = {}
+  if (goal.rewardMedicine > 0) gains.medicine = goal.rewardMedicine
+  if (goal.rewardKnowledge > 0) gains.knowledge = goal.rewardKnowledge
+  const gained = applyInventoryGain(inventory, coins, gains, buildings)
+  const coin = applyCoinGain(gained.coins, goal.rewardCoins, coinSoftCap(buildings))
   const done: SeasonGoal = { ...goal, completed: true, progress: goal.target }
+  const overflowNote = formatOverflowStatus({
+    overflow: gained.overflow,
+    coinFromOverflow: gained.coinFromOverflow,
+    coinDiscarded: gained.coinDiscarded + coin.discarded,
+  })
+  const vaultNote = coin.discarded > 0 && !overflowNote ? '金库已满' : ''
   return {
     goal: done,
-    inventory: inv,
-    coins: coins + goal.rewardCoins,
-    note: `季节目标完成：${goalTitle(goal)}（奖励 ${goalRewardText(goal)}）`,
+    inventory: gained.inventory,
+    coins: coin.coins,
+    note: `季节目标完成：${goalTitle(goal)}（奖励 ${goalRewardText(goal)}）${
+      overflowNote ? ` · ${overflowNote}` : vaultNote ? ` · ${vaultNote}` : ''
+    }`,
     goalHistory: pushGoalHistory(history, done),
   }
 }
@@ -319,6 +389,7 @@ function bumpGoalProgress(
   cottage: LevelState,
   harbor: LevelState,
   boat: LevelState,
+  granary: GranaryState,
   cats: CatInstance[],
   history: string[],
 ) {
@@ -326,7 +397,142 @@ function bumpGoalProgress(
   if (isCumulativeGoal(kind) && g.kind === kind && !g.completed) {
     g = { ...g, progress: g.progress + 1 }
   }
-  return applyGoalIfMet(g, inventory, coins, cottage, harbor, boat, cats, history)
+  return applyGoalIfMet(g, inventory, coins, cottage, harbor, boat, granary, cats, history)
+}
+
+function catDisplayName(breedId: string): string {
+  return getBreed(breedId)?.name ?? '小猫'
+}
+
+/** 墙钟驱动：超时默认 / 海盗对抗揭晓 */
+function resolveMajorWallClock(get: () => GameState): Partial<GameState> | null {
+  const s = get()
+  const ev = s.majorEvent
+  if (!ev) return null
+  const now = Date.now()
+
+  if (ev.phase === 'threat' && ev.decideBy > 0 && now >= ev.decideBy) {
+    if (ev.kind === 'pirate') return buildTributePatch(s, true)
+    if (ev.kind === 'plague') {
+      const nowAbs = absoluteGameMinute(s.day, s.minuteOfDay)
+      return {
+        majorEvent: applyPlagueEndure({
+          nowAbs,
+          cats: s.cats,
+          prev: s.majorEvent,
+          auto: true,
+        }),
+        statusMessage: '【疫病潮】挂机期间已硬扛——请查看弹窗详情',
+      }
+    }
+    if (ev.kind === 'stray') {
+      const nowAbs = absoluteGameMinute(s.day, s.minuteOfDay)
+      return {
+        majorEvent: applyStrayReject({
+          nowAbs,
+          prev: s.majorEvent,
+          auto: true,
+        }),
+        statusMessage: '【流浪猫】挂机期间已婉拒——请查看弹窗详情',
+      }
+    }
+  }
+  if (
+    ev.kind === 'pirate' &&
+    ev.phase === 'fighting' &&
+    ev.fightEndsAt > 0 &&
+    now >= ev.fightEndsAt &&
+    ev.pendingOutcome
+  ) {
+    return buildFightRevealPatch(s)
+  }
+  return null
+}
+
+function buildTributePatch(s: GameState, auto: boolean): Partial<GameState> {
+  const tribute = applyPirateTribute({
+    coins: s.coins,
+    inventory: s.inventory,
+    cats: s.cats,
+  })
+  const nowAbs = absoluteGameMinute(s.day, s.minuteOfDay)
+  const settled = clearDecisionWindow(s.majorEvent, nowAbs + MAJOR_COOLDOWN_MINUTES)
+  const title = auto ? '海盗来过：已自动献贡' : '献上贡品'
+  const body = auto
+    ? `${tribute.summary}\n\n你不在时海盗登岛收走了贡品。请确认损失后再继续。`
+    : tribute.summary
+  return {
+    coins: tribute.coins,
+    inventory: tribute.inventory,
+    majorEvent: {
+      ...settled,
+      phase: 'result',
+      needsAck: true,
+      autoResolved: auto,
+      resultTitle: title,
+      resultBody: body,
+    },
+    statusMessage: auto
+      ? '【海盗】挂机期间已自动献贡——请查看弹窗详情'
+      : `【海盗】${tribute.summary}`,
+  }
+}
+
+function buildFightRevealPatch(s: GameState): Partial<GameState> {
+  const outcome = s.majorEvent.pendingOutcome
+  if (!outcome) return {}
+  const applied = applyFightOutcome({
+    outcome,
+    cats: s.cats,
+    inventory: s.inventory,
+    coins: s.coins,
+    buildings: softCapBuildings(s),
+    nameOf: catDisplayName,
+  })
+  const nowAbs = absoluteGameMinute(s.day, s.minuteOfDay)
+  const settled = clearDecisionWindow(s.majorEvent, nowAbs + MAJOR_COOLDOWN_MINUTES)
+  return {
+    cats: applied.cats,
+    inventory: applied.inventory,
+    coins: applied.coins,
+    gameOver: applied.gameOver,
+    timeScale: applied.gameOver ? 0 : s.timeScale,
+    majorEvent: {
+      ...settled,
+      phase: applied.gameOver ? 'idle' : 'result',
+      needsAck: !applied.gameOver,
+      autoResolved: false,
+      resultTitle: applied.title,
+      resultBody: applied.body,
+    },
+    statusMessage: `【海盗】${applied.title}：${applied.body}`,
+  }
+}
+
+/** 白天有足够药品时立刻治愈，不必等到日结 */
+function buildDaytimeCurePatch(s: GameState): Partial<GameState> | null {
+  if (s.gameOver) return null
+  const sick = s.cats.filter((c) => c.sick)
+  if (sick.length === 0) return null
+  const cost = medicinePerCure(s.cats)
+  let med = s.inventory.medicine ?? 0
+  if (med < cost) return null
+
+  let cured = 0
+  const cats = s.cats.map((c) => {
+    if (!c.sick) return c
+    if (med < cost) return c
+    med -= cost
+    cured += 1
+    return { ...c, sick: false, behavior: c.behavior === 'idle' ? c.behavior : 'idle' }
+  })
+  if (cured === 0) return null
+
+  return {
+    cats,
+    inventory: { ...s.inventory, medicine: med },
+    statusMessage: `用药治愈 ${cured} 只病猫（${cost} 药/只${cost > 1 ? ' · 无医生' : ' · 有医生'}）`,
+  }
 }
 
 interface GameState {
@@ -355,6 +561,8 @@ interface GameState {
   rainbowUntil: number
   /** 偶发事件：商船 / 丰收 / 欠收 */
   gameEvent: GameEvent
+  /** 偶发大事：海盗 / 疫病潮 / 流浪猫 */
+  majorEvent: MajorEventState
   /** 天空白云数量 */
   cloudCount: number
   /** 白云漂移速度 */
@@ -369,6 +577,8 @@ interface GameState {
   seasonGoal: SeasonGoal
   /** 近期目标去重历史（kind:target） */
   goalHistory: string[]
+  /** 工具保养不足：户外工产量降低 */
+  toolsWorn: boolean
   /** 猫头闲聊气泡（最多 2） */
   speechBubbles: SpeechBubble[]
   lastIslandSpeechAt: number
@@ -394,15 +604,31 @@ interface GameState {
   catHoe: (x: number, z: number) => boolean
   catPlant: (x: number, z: number) => boolean
   catWater: (x: number, z: number) => boolean
-  catHarvest: (x: number, z: number) => boolean
+  catHarvest: (x: number, z: number, catId?: string) => boolean
   catSellWheat: (catId?: string) => boolean
   catMine: (catId: string) => boolean
   catChop: (catId: string, treeIndex: number) => boolean
   catFish: (catId: string) => boolean
   catStudy: (catId: string) => boolean
   catCraftMedicine: (catId: string) => boolean
-  catPlay: () => boolean
-  catEat: () => boolean
+  catPlay: (catId: string) => boolean
+  catEat: (catId: string) => boolean
+  /** 海盗：献贡 */
+  pirateTribute: () => boolean
+  /** 海盗：反抗（进入对抗演出） */
+  pirateFight: () => boolean
+  /** 海盗：对抗条走满后揭晓 */
+  pirateRevealFight: () => boolean
+  /** 大事结果：知道了 */
+  majorAck: () => void
+  /** 疫病潮：隔离 */
+  majorPlagueIsolate: () => boolean
+  /** 疫病潮：硬扛 */
+  majorPlagueEndure: () => boolean
+  /** 流浪猫：收留 */
+  majorStrayAccept: () => boolean
+  /** 流浪猫：婉拒 */
+  majorStrayReject: () => boolean
   /** 开发者工具：批量改状态 */
   devSet: (patch: DevPatch) => void
 }
@@ -481,6 +707,24 @@ export interface DevPatch {
   forceSpeechSituation?: DialogueSituation
   /** 清除浏览器本地存档（不重置当前局） */
   clearSave?: boolean
+  /** 给一只猫挂上玩具/零食开心加成 */
+  forceComfortBoost?: boolean
+  /** 强制海盗来袭 */
+  forcePirateRaid?: boolean
+  /** 立刻按献贡结算当前海盗威胁 */
+  forcePirateTribute?: boolean
+  /** 立刻反抗并跳过演出揭晓 */
+  forcePirateFight?: boolean
+  /** 强制疫病潮 */
+  forcePlagueTide?: boolean
+  /** 强制流浪猫投奔 */
+  forceStrayCats?: boolean
+  /** 清空大事冷却 */
+  clearMajorCooldown?: boolean
+  /** 清除疫病残留 */
+  clearPlague?: boolean
+  /** 工具钝了（户外产量降低） */
+  toolsWorn?: boolean
 }
 
 const savedSlice = loadSavedGame()
@@ -494,7 +738,11 @@ export const useGameStore = create<GameState>((set, get) => ({
     : '奶糖开始打理田地…升级建筑需要矿石和木材',
   speechBubbles: [],
 
-  setTimeScale: (scale) => set({ timeScale: scale }),
+  setTimeScale: (scale) => {
+    let next = Math.max(0, scale)
+    if (import.meta.env.PROD && next > 2) next = 2
+    set({ timeScale: next })
+  },
   setStatusMessage: (msg) => set({ statusMessage: msg }),
 
   restartGame: () => {
@@ -643,6 +891,12 @@ export const useGameStore = create<GameState>((set, get) => ({
         level: Math.max(1, Math.min(COTTAGE_MAX_LEVEL, Math.floor(patch.cottageLevel))),
       }
     }
+    if (patch.toolsWorn != null) {
+      next.toolsWorn = patch.toolsWorn
+      next.statusMessage = patch.toolsWorn
+        ? '【开发者】工具变钝（户外产量×0.85）'
+        : '【开发者】工具已修好'
+    }
     if (patch.cloudCount != null) next.cloudCount = Math.max(0, Math.min(16, Math.floor(patch.cloudCount)))
     if (patch.cloudSpeed != null) next.cloudSpeed = Math.max(0, Math.min(4, patch.cloudSpeed))
     if (patch.celestialSize != null) next.celestialSize = Math.max(0.4, Math.min(2.5, patch.celestialSize))
@@ -739,11 +993,21 @@ export const useGameStore = create<GameState>((set, get) => ({
       const idx = synced.findIndex((t) => t.stage >= TREE_MAX_STAGE)
       if (idx >= 0) {
         next.trees = synced.map((t, i) => (i === idx ? { stage: 0, growProgress: 0 } : t))
-        const wood = (next.inventory as Record<string, number> | undefined)?.wood ?? s.inventory.wood ?? 0
         const inv = { ...(s.inventory), ...((next.inventory as object) ?? {}) }
-        if (wood < WOOD_SOFT_CAP) inv.wood = wood + CHOP_WOOD_YIELD
-        next.inventory = inv
-        next.statusMessage = `【开发者】砍倒第 ${idx + 1} 棵树 → 树桩`
+        const coinsNow = next.coins ?? s.coins
+        const buildings = softCapBuildings({
+          cottage: next.cottage ?? s.cottage,
+          harbor: next.harbor ?? s.harbor,
+          boat: next.boat ?? s.boat,
+          granary: next.granary ?? s.granary,
+        })
+        const gained = applyInventoryGain(inv, coinsNow, { wood: CHOP_WOOD_YIELD }, buildings)
+        next.inventory = gained.inventory
+        next.coins = gained.coins
+        const overflowNote = formatOverflowStatus(gained)
+        next.statusMessage = `【开发者】砍倒第 ${idx + 1} 棵树 → 树桩${
+          overflowNote ? ` · ${overflowNote}` : ''
+        }`
       } else {
         next.statusMessage = '【开发者】没有成材树可砍（先点「树木全成材」）'
       }
@@ -897,6 +1161,82 @@ export const useGameStore = create<GameState>((set, get) => ({
       next.statusMessage = '【开发者】已清除浏览器存档（当前局仍继续）'
     }
 
+    if (patch.forceComfortBoost) {
+      const pool = (next.cats ?? s.cats).filter((c) => !c.sick)
+      const list = pool.length > 0 ? pool : (next.cats ?? s.cats)
+      const target = list[Math.floor(Math.random() * list.length)]
+      if (target) {
+        const day = next.day ?? s.day
+        const minute = next.minuteOfDay ?? s.minuteOfDay
+        const until = absoluteGameMinute(day, minute) + COMFORT_BOOST_MINUTES
+        next.cats = (next.cats ?? s.cats).map((c) =>
+          c.id === target.id ? { ...c, boostUntil: until } : c,
+        )
+        next.statusMessage = `【开发者】${getBreed(target.breedId)?.name ?? '小猫'}开心加成 ${COMFORT_BOOST_MINUTES / 60} 小时`
+      }
+    }
+
+    if (patch.clearMajorCooldown) {
+      const ev = next.majorEvent ?? s.majorEvent
+      next.majorEvent = { ...ev, nextEligibleAt: 0 }
+      next.statusMessage = '【开发者】大事冷却已清'
+    }
+    if (patch.clearPlague) {
+      const ev = next.majorEvent ?? s.majorEvent
+      next.majorEvent = { ...ev, plagueUntil: 0, plagueSickMult: 1 }
+      next.statusMessage = '【开发者】疫病残留已清'
+    }
+    if (patch.forcePirateRaid) {
+      const prev = next.majorEvent ?? s.majorEvent
+      next.majorEvent = startMajorThreat('pirate', prev)
+      next.statusMessage = '【开发者】海盗来袭！'
+    }
+    if (patch.forcePlagueTide) {
+      const prev = next.majorEvent ?? s.majorEvent
+      next.majorEvent = startMajorThreat('plague', prev)
+      next.statusMessage = '【开发者】疫病潮！'
+    }
+    if (patch.forceStrayCats) {
+      const cats = (next.cats as CatInstance[] | undefined) ?? s.cats
+      const offer = rollStrayOffer(cats.map((c) => c.breedId))
+      const prev = next.majorEvent ?? s.majorEvent
+      next.majorEvent = startMajorThreat('stray', prev, offer)
+      next.statusMessage = '【开发者】流浪猫投奔！'
+    }
+    if (patch.forcePirateTribute) {
+      const cur = { ...s, ...next, majorEvent: next.majorEvent ?? s.majorEvent } as GameState
+      if (cur.majorEvent.kind === 'pirate' && cur.majorEvent.phase === 'threat') {
+        Object.assign(next, buildTributePatch(cur, false))
+      } else {
+        next.statusMessage = '【开发者】当前没有海盗威胁'
+      }
+    }
+    if (patch.forcePirateFight) {
+      let curEv = next.majorEvent ?? s.majorEvent
+      if (
+        !(curEv.kind === 'pirate' && (curEv.phase === 'threat' || curEv.phase === 'fighting'))
+      ) {
+        curEv = startMajorThreat('pirate', curEv)
+        next.majorEvent = curEv
+      }
+      const outcome = rollFightOutcome({
+        cats: (next.cats as CatInstance[] | undefined) ?? s.cats,
+        cottage: (next.cottage as LevelState | undefined) ?? s.cottage,
+      })
+      const mid = {
+        ...s,
+        ...next,
+        majorEvent: {
+          ...curEv,
+          kind: 'pirate' as const,
+          phase: 'fighting' as const,
+          fightEndsAt: Date.now(),
+          pendingOutcome: outcome,
+        },
+      } as GameState
+      Object.assign(next, buildFightRevealPatch(mid))
+    }
+
     {
       const day = next.day ?? s.day
       const minute = next.minuteOfDay ?? s.minuteOfDay
@@ -909,6 +1249,12 @@ export const useGameStore = create<GameState>((set, get) => ({
 
       if (patch.forceVoyageReturn && voyage.phase === 'away') {
         voyage = { ...voyage, returnAt: nowAbs }
+        const buildings = softCapBuildings({
+          cottage: next.cottage ?? s.cottage,
+          harbor,
+          boat,
+          granary: next.granary ?? s.granary,
+        })
         const settled = settleVoyageReturn({
           nowAbs,
           minuteOfDay: minute,
@@ -917,12 +1263,20 @@ export const useGameStore = create<GameState>((set, get) => ({
           harbor,
           boat,
           boatVoyage: voyage,
+          buildings,
         })
         if (settled) {
           next.boatVoyage = settled.boatVoyage
           next.inventory = settled.inventory
-          next.coins = (next.coins ?? s.coins) + settled.coinsDelta
-          next.statusMessage = `【开发者】${settled.statusMessage}`
+          const coin = applyCoinGain(
+            next.coins ?? s.coins,
+            settled.coinsDelta,
+            coinSoftCap(buildings),
+          )
+          next.coins = coin.coins
+          next.statusMessage = `【开发者】${settled.statusMessage}${
+            coin.discarded > 0 ? ' · 金库已满' : ''
+          }`
           let g = next.seasonGoal ?? s.seasonGoal
           if (g.kind === 'voyages' && !g.completed) {
             const hit = bumpGoalProgress(
@@ -933,6 +1287,7 @@ export const useGameStore = create<GameState>((set, get) => ({
               next.cottage ?? s.cottage,
               next.harbor ?? s.harbor,
               next.boat ?? s.boat,
+              next.granary ?? s.granary,
               cats,
               next.goalHistory ?? s.goalHistory,
             )
@@ -952,6 +1307,12 @@ export const useGameStore = create<GameState>((set, get) => ({
           harbor,
           boat,
           boatVoyage: voyage,
+          buildings: softCapBuildings({
+            cottage: next.cottage ?? s.cottage,
+            harbor,
+            boat,
+            granary: next.granary ?? s.granary,
+          }),
         })
         if (departed) {
           next.boatVoyage = departed.boatVoyage
@@ -974,15 +1335,35 @@ export const useGameStore = create<GameState>((set, get) => ({
         if (g.completed) {
           next.statusMessage = '【开发者】目标已完成过'
         } else {
-          const inv = { ...(next.inventory ?? s.inventory) }
-          inv.medicine = (inv.medicine ?? 0) + g.rewardMedicine
-          inv.knowledge = (inv.knowledge ?? 0) + g.rewardKnowledge
-          next.inventory = inv
-          next.coins = (next.coins ?? s.coins) + g.rewardCoins
+          const gains: Record<string, number> = {}
+          if (g.rewardMedicine > 0) gains.medicine = g.rewardMedicine
+          if (g.rewardKnowledge > 0) gains.knowledge = g.rewardKnowledge
+          const buildings = softCapBuildings({
+            cottage: next.cottage ?? s.cottage,
+            harbor: next.harbor ?? s.harbor,
+            boat: next.boat ?? s.boat,
+            granary: next.granary ?? s.granary,
+          })
+          const gained = applyInventoryGain(
+            next.inventory ?? s.inventory,
+            next.coins ?? s.coins,
+            gains,
+            buildings,
+          )
+          const coin = applyCoinGain(gained.coins, g.rewardCoins, coinSoftCap(buildings))
           const done = { ...g, completed: true, progress: g.target }
+          next.inventory = gained.inventory
+          next.coins = coin.coins
           next.seasonGoal = done
           next.goalHistory = pushGoalHistory(next.goalHistory ?? s.goalHistory, done)
-          next.statusMessage = `【开发者】季节目标完成：${goalTitle(g)}（奖励 ${goalRewardText(g)}）`
+          const overflowNote = formatOverflowStatus({
+            overflow: gained.overflow,
+            coinFromOverflow: gained.coinFromOverflow,
+            coinDiscarded: gained.coinDiscarded + coin.discarded,
+          })
+          next.statusMessage = `【开发者】季节目标完成：${goalTitle(g)}（奖励 ${goalRewardText(g)}）${
+            overflowNote ? ` · ${overflowNote}` : ''
+          }`
         }
       }
       if (patch.clearGoalHistory) {
@@ -1003,7 +1384,15 @@ export const useGameStore = create<GameState>((set, get) => ({
         !patch.clearGoalHistory &&
         !patch.clearSpeechCooldown &&
         !patch.forceSpeechSituation &&
-        !patch.clearSave
+        !patch.clearSave &&
+        !patch.forceComfortBoost &&
+        !patch.forcePirateRaid &&
+        !patch.forcePirateTribute &&
+        !patch.forcePirateFight &&
+        !patch.forcePlagueTide &&
+        !patch.forceStrayCats &&
+        !patch.clearMajorCooldown &&
+        !patch.clearPlague
       ) {
         next.statusMessage = '【开发者】已应用调试参数'
       }
@@ -1014,6 +1403,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
   },
   tick: (deltaSeconds) => {
+    {
+      const wall = resolveMajorWallClock(get)
+      if (wall) set(wall)
+    }
+    {
+      const cured = buildDaytimeCurePatch(get())
+      if (cured) set(cured)
+    }
     const state = get()
     if (state.gameOver) return
     const catCount = state.cats.length
@@ -1048,6 +1445,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     let rainbowChanged = false
     let gameEvent: GameEvent = state.gameEvent
     let eventChanged = false
+    let majorEvent = state.majorEvent
+    let majorChanged = false
+    let toolsWorn = state.toolsWorn
+    let toolsWornChanged = false
 
     while (nextMinute >= MINUTES_PER_DAY) {
       nextMinute -= MINUTES_PER_DAY
@@ -1086,12 +1487,40 @@ export const useGameStore = create<GameState>((set, get) => ({
         }
       }
 
-      const inv = { ...inventory }
+      let inv = { ...inventory }
       let living = nextCats.map((c) => ({ ...c }))
       const notes: string[] = []
       if (newGoalNote) notes.push(newGoalNote)
 
-      // 1) 日耗鱼肉（药品仅治病，不当饭）
+      // 1) 先治病 / 病死：离世的猫不再参与口粮与舒适消耗
+      const cureCost = medicinePerCure(living)
+      let cured = 0
+      const diedSickNames: string[] = []
+      const afterCure: typeof living = []
+      for (const c of living) {
+        if (!c.sick) {
+          afterCure.push(c)
+          continue
+        }
+        if ((inv.medicine ?? 0) >= cureCost) {
+          inv.medicine = (inv.medicine ?? 0) - cureCost
+          cured += 1
+          afterCure.push({ ...c, sick: false })
+        } else {
+          diedSickNames.push(getBreed(c.breedId)?.name ?? '小猫')
+        }
+      }
+      living = afterCure
+      if (cured > 0) {
+        notes.push(
+          `药品治愈 ${cured} 只病猫（${cureCost} 药/只${cureCost > 1 ? ' · 无医生' : ' · 有医生'}）`,
+        )
+      }
+      if (diedSickNames.length > 0) {
+        notes.push(`${diedSickNames.join('、')} 因病离世`)
+      }
+
+      // 2) 日耗鱼肉：仅按仍在岛上的猫计算（药品不当饭）
       const fishNeed = dailyFishNeed(living)
       const fishHave = inv.fish ?? 0
       let fishUsed = Math.min(fishNeed, fishHave)
@@ -1101,36 +1530,45 @@ export const useGameStore = create<GameState>((set, get) => ({
         else notes.push(`鱼肉不足 ${fishUsed}/${fishNeed}`)
       }
 
-      // 2) 药品只治病：1:1；未治愈病猫翌日离世
-      let cured = 0
-      const diedSickNames: string[] = []
-      const afterCure: typeof living = []
-      for (const c of living) {
-        if (!c.sick) {
-          afterCure.push(c)
-          continue
-        }
-        if ((inv.medicine ?? 0) >= 1) {
-          inv.medicine = (inv.medicine ?? 0) - 1
-          cured += 1
-          afterCure.push({ ...c, sick: false })
-        } else {
-          diedSickNames.push(getBreed(c.breedId)?.name ?? '小猫')
-        }
+      // 2b) 取暖生火：非冬每猫 1 木（夜），冬天每猫 2 木（全天）；能烧多少烧多少
+      const woodNeed = heatingWoodNeed(living.length, rollSeason)
+      const woodHave = inv.wood ?? 0
+      const woodUsed = Math.min(woodNeed, woodHave)
+      if (woodUsed > 0) inv.wood = woodHave - woodUsed
+      const coldShort = woodUsed < woodNeed
+      if (woodNeed > 0) {
+        if (!coldShort) notes.push(`生火取暖消耗木材 ×${woodUsed}`)
+        else notes.push(`木材不足取暖 ${woodUsed}/${woodNeed}`)
       }
-      living = afterCure
-      if (cured > 0) notes.push(`药品治愈 ${cured} 只病猫`)
-      if (diedSickNames.length > 0) {
-        notes.push(`${diedSickNames.join('、')} 因病离世`)
+
+      // 2c) 工具保养：矿工/伐木/渔夫各 1 矿；不足则次日户外产量变钝
+      const oreNeed = toolMaintOreNeed(living)
+      const oreHave = inv.ore ?? 0
+      const oreUsed = Math.min(oreNeed, oreHave)
+      if (oreUsed > 0) inv.ore = oreHave - oreUsed
+      const toolsShort = oreUsed < oreNeed
+      if (toolsShort !== toolsWorn) toolsWornChanged = true
+      toolsWorn = toolsShort
+      if (oreNeed > 0) {
+        if (!toolsShort) notes.push(`工具保养消耗矿石 ×${oreUsed}`)
+        else notes.push(`矿石不足保养 ${oreUsed}/${oreNeed} · 户外干活变钝`)
+      } else if (state.toolsWorn) {
+        notes.push('工具已修好')
       }
-      // 新发病：矿工/船商概率更高；麦种告罄额外压力
+
+      // 3) 新发病：矿工/船商概率更高；麦种告罄 / 取暖不足额外压力；疫病潮倍率
       const plantable = rollSeason !== 'winter'
       const seedEmpty = (inv.wheat_seed ?? 0) <= 0 && plantable
+      const dayAbs = absoluteGameMinute(nextDay, nextMinute)
+      majorEvent = expirePlagueIfNeeded(majorEvent, dayAbs)
+      const plagueMult =
+        majorEvent.plagueUntil > dayAbs ? majorEvent.plagueSickMult : 1
       let newlySick = 0
       living = living.map((c) => {
         if (c.sick) return c
-        let chance = sickChanceForRole(c.role)
+        let chance = sickChanceForRole(c.role) * plagueMult
         if (seedEmpty) chance += SEED_SHORTAGE_SICK_BONUS
+        if (coldShort) chance += COLD_SHORTAGE_SICK_BONUS
         if (Math.random() < chance) {
           newlySick += 1
           return { ...c, sick: true }
@@ -1138,6 +1576,9 @@ export const useGameStore = create<GameState>((set, get) => ({
         return c
       })
       if (newlySick > 0) notes.push(`${newlySick} 只猫生病了，快备药`)
+      if (majorEvent.plagueUntil !== state.majorEvent.plagueUntil) {
+        majorChanged = true
+      }
 
       // 资源短缺惩罚（轻松节奏：低概率失去一只）
       const tryLoseOne = (reason: string, chance: number) => {
@@ -1154,13 +1595,8 @@ export const useGameStore = create<GameState>((set, get) => ({
         tryLoseOne('麦种断供', SEED_SHORTAGE_DEATH_CHANCE)
       }
 
-      const comfortNeed = dailyComfortNeed(living)
-      const snackHave = inv.snack ?? 0
-      const snackUsed = Math.min(comfortNeed, snackHave)
-      if (snackUsed > 0) inv.snack = snackHave - snackUsed
-      const toyHave = inv.toy ?? 0
-      const toyUsed = Math.min(comfortNeed, toyHave)
-      if (toyUsed > 0) inv.toy = toyHave - toyUsed
+      const comfort = applyComfortConsume(inv, dailyComfortNeed(living))
+      inv = comfort.inventory
 
       inventory = inv
       nextCats = living
@@ -1184,6 +1620,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       nextCats = nextCats.map((c) => ({
         ...c,
         chopsToday: 0,
+        minesToday: 0,
         castsToday: 0,
         studiesToday: 0,
         craftsToday: 0,
@@ -1193,6 +1630,49 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     const nextSeason = seasonForDay(nextDay)
     const nowAbs = absoluteGameMinute(nextDay, nextMinute)
+
+    // 日结后：偶发大事（海盗 / 疫病潮 / 流浪猫）
+    if (
+      dayRolled &&
+      !gameOver &&
+      !decisionWindowBusy(majorEvent) &&
+      nowAbs >= majorEvent.nextEligibleAt &&
+      gameEvent.kind === 'none'
+    ) {
+      const pirateP = pirateWealthEligible({ day: nextDay, coins, inventory })
+        ? rollPirateChance(coins, inventory) * PIRATE_P_WEIGHT
+        : 0
+      const plagueP = canRollPlague({ day: nextDay, cats: nextCats, inventory })
+        ? plagueChance({ cats: nextCats, inventory })
+        : 0
+      const strayP = canRollStray({
+        day: nextDay,
+        cats: nextCats,
+        cottageLevel: state.cottage.level,
+        inventory,
+      })
+        ? strayChance({ cats: nextCats, cottageLevel: state.cottage.level })
+        : 0
+      const picked = pickMajorEventKind({
+        pirate: pirateP,
+        plague: plagueP,
+        stray: strayP,
+      })
+      if (picked === 'pirate') {
+        majorEvent = startMajorThreat('pirate', majorEvent)
+        majorChanged = true
+        status = '【海盗】黑帆逼近码头！快决定献贡或反抗'
+      } else if (picked === 'plague') {
+        majorEvent = startMajorThreat('plague', majorEvent)
+        majorChanged = true
+        status = '【疫病潮】岛上蔓延疫病！快决定隔离或硬扛'
+      } else if (picked === 'stray') {
+        const offer = rollStrayOffer(nextCats.map((c) => c.breedId))
+        majorEvent = startMajorThreat('stray', majorEvent, offer)
+        majorChanged = true
+        status = '【流浪猫】有流浪猫想投奔喵圃'
+      }
+    }
 
     if (isPrecipitating(weather)) {
       if (nowAbs >= weatherUntil) {
@@ -1259,6 +1739,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     // 货船回港
     {
+      const buildings = softCapBuildings(state)
       const settled = settleVoyageReturn({
         nowAbs,
         minuteOfDay: nextMinute,
@@ -1267,12 +1748,15 @@ export const useGameStore = create<GameState>((set, get) => ({
         harbor: state.harbor,
         boat: state.boat,
         boatVoyage,
+        buildings,
       })
       if (settled) {
         boatVoyage = settled.boatVoyage
         inventory = settled.inventory
-        coins += settled.coinsDelta
-        status = settled.statusMessage
+        const coin = applyCoinGain(coins, settled.coinsDelta, coinSoftCap(buildings))
+        coins = coin.coins
+        status =
+          settled.statusMessage + (coin.discarded > 0 ? ' · 金库已满' : '')
         voyageChanged = true
         if (seasonGoal.kind === 'voyages' && !seasonGoal.completed) {
           const hit = bumpGoalProgress(
@@ -1283,6 +1767,7 @@ export const useGameStore = create<GameState>((set, get) => ({
             state.cottage,
             state.harbor,
             state.boat,
+            state.granary,
             nextCats,
             goalHistory,
           )
@@ -1309,6 +1794,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         harbor: state.harbor,
         boat: state.boat,
         boatVoyage,
+        buildings: softCapBuildings(state),
       })
       if (departed) {
         boatVoyage = departed.boatVoyage
@@ -1327,6 +1813,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         state.cottage,
         state.harbor,
         state.boat,
+        state.granary,
         nextCats,
         goalHistory,
       )
@@ -1374,12 +1861,14 @@ export const useGameStore = create<GameState>((set, get) => ({
       weatherChanged ||
       rainbowChanged ||
       eventChanged ||
+      majorChanged ||
       gameOverChanged ||
       voyageChanged ||
       goalChanged ||
       goalHistoryChanged ||
       coinsChanged ||
-      speechChanged
+      speechChanged ||
+      toolsWornChanged
     ) {
       set({
         minuteOfDay: nextMinute,
@@ -1397,10 +1886,12 @@ export const useGameStore = create<GameState>((set, get) => ({
         nextWeatherAt,
         rainbowUntil,
         gameEvent,
+        majorEvent,
         boatVoyage,
         seasonGoal,
         goalHistory,
         speechBubbles,
+        toolsWorn,
         ...(gameOver ? { gameOver: true, timeScale: 0 } : {}),
       })
     } else {
@@ -1411,6 +1902,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       state.nextWeatherAt = nextWeatherAt
       state.rainbowUntil = rainbowUntil
       state.gameEvent = gameEvent
+      state.majorEvent = majorEvent
     }
   },
 
@@ -1461,12 +1953,22 @@ export const useGameStore = create<GameState>((set, get) => ({
         return true
       }
       case 'buy_toy': {
+        const toyCap = softCapFor('toy', softCapBuildings(get()))!
+        if ((inv.toy ?? 0) >= toyCap) {
+          set({ statusMessage: `玩具已满（${toyCap}）` })
+          return false
+        }
         if (!pay(TOY_PRICE)) return false
         inv.toy = (inv.toy ?? 0) + 1
         set({ coins: coins - TOY_PRICE, inventory: inv, statusMessage: '购入猫咪玩具 ×1' })
         return true
       }
       case 'buy_snack': {
+        const snackCap = softCapFor('snack', softCapBuildings(get()))!
+        if ((inv.snack ?? 0) >= snackCap) {
+          set({ statusMessage: `零食已满（${snackCap}）` })
+          return false
+        }
         if (!pay(SNACK_PRICE)) return false
         inv.snack = (inv.snack ?? 0) + 1
         set({ coins: coins - SNACK_PRICE, inventory: inv, statusMessage: '购入猫咪零食 ×1' })
@@ -1481,7 +1983,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         const owned = cats.map((c) => c.breedId)
         const breed = nextRecruitBreed(owned)
         if (!breed) {
-          set({ statusMessage: '没有更多可招募的品种了' })
+          set({ statusMessage: '暂时无法招募' })
           return false
         }
         const price = recruitPriceFor(breed.recruitPrice, cats.length)
@@ -1497,10 +1999,12 @@ export const useGameStore = create<GameState>((set, get) => ({
           role,
           roleLevel: 1,
           chopsToday: 0,
+          minesToday: 0,
           castsToday: 0,
           studiesToday: 0,
           craftsToday: 0,
           sick: false,
+          boostUntil: 0,
         }
         set({
           coins: coins - price,
@@ -1575,17 +2079,21 @@ export const useGameStore = create<GameState>((set, get) => ({
         return true
       }
       case 'granary_repair': {
-        if (granary.level <= 0) return false
-        if (granary.condition >= 100) {
-          set({ statusMessage: '粮仓完好，无需修缮' })
+        if (granary.level <= 0) {
+          set({ statusMessage: '还没有粮仓' })
+          return false
+        }
+        const before = Math.floor(granary.condition)
+        if (before >= 100) {
+          set({ statusMessage: `粮仓完好度已满（${before}/100），无需修缮` })
           return false
         }
         if (!pay(GRANARY_REPAIR_COST)) return false
-        const cond = Math.min(100, granary.condition + GRANARY_REPAIR_AMOUNT)
+        const cond = Math.min(100, before + GRANARY_REPAIR_AMOUNT)
         set({
           coins: coins - GRANARY_REPAIR_COST,
           granary: { ...granary, condition: cond },
-          statusMessage: `粮仓修缮完成，完好度 ${cond}`,
+          statusMessage: `粮仓修缮完成，完好度 ${before}→${cond}`,
         })
         return true
       }
@@ -1642,10 +2150,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     const inv = { ...inventory }
     inv[resource] = (inv[resource] ?? 0) - preview.qty
+    const coin = applyCoinGain(coins, preview.earn, coinSoftCap(softCapBuildings(get())))
+    const vaultNote = coin.discarded > 0 ? ' · 金库已满' : ''
     set({
       inventory: inv,
-      coins: coins + preview.earn,
-      statusMessage: `回收${SELL_LABEL[resource]} ×${preview.qty}（+${preview.earn} 金 · 单价 ${preview.unit}）`,
+      coins: coin.coins,
+      statusMessage: `回收${SELL_LABEL[resource]} ×${preview.qty}（+${coin.added} 金 · 单价 ${preview.unit}${vaultNote}）`,
     })
     return true
   },
@@ -1657,7 +2167,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const counts = countByRole(cats)
 
     if (delta === 1) {
-      // 散民就任免费
+      // 散民就任免费；等级 = 散民身上保留等级 − 1（最低 1）
       if (counts.civilian <= 0) {
         set({ statusMessage: '没有散民可分配，请先解除其他职业' })
         return false
@@ -1665,29 +2175,35 @@ export const useGameStore = create<GameState>((set, get) => ({
       const donor = cats.find((c) => c.role === 'civilian')
       if (!donor) return false
       const name = getBreed(donor.breedId)?.name ?? '小猫'
+      const prevLv = clampRoleLevel(donor.roleLevel)
+      const nextLv = roleLevelAfterReassign(prevLv)
       set({
         cats: cats.map((c) =>
           c.id === donor.id
-            ? { ...c, role, roleLevel: 1, behavior: roleBehavior(role) }
+            ? { ...c, role, roleLevel: nextLv, behavior: roleBehavior(role) }
             : c,
         ),
-        statusMessage: `${name}就任${ROLE_LABEL[role]}（散民 −1）`,
+        statusMessage:
+          prevLv > nextLv
+            ? `${name}就任${ROLE_LABEL[role]} Lv.${nextLv}（换岗降 1 级）`
+            : `${name}就任${ROLE_LABEL[role]} Lv.${nextLv}`,
       })
       return true
     }
 
-    // delta === -1：解除职业 → 散民（免费）
+    // delta === -1：解除职业 → 散民（免费，保留等级供下次就任继承）
     if (counts[role] <= 0) return false
     const specialist = cats.find((c) => (c.role ?? 'farmer') === role)
     if (!specialist) return false
     const name = getBreed(specialist.breedId)?.name ?? '小猫'
+    const keepLv = clampRoleLevel(specialist.roleLevel)
     set({
       cats: cats.map((c) =>
         c.id === specialist.id
-          ? { ...c, role: 'civilian' as const, roleLevel: 1, behavior: 'wander' }
+          ? { ...c, role: 'civilian' as const, roleLevel: keepLv, behavior: 'wander' }
           : c,
       ),
-      statusMessage: `${name}卸任成散民，四处闲逛等待分配（${ROLE_LABEL[role]} −1）`,
+      statusMessage: `${name}卸任成散民（保留 Lv.${keepLv}，再就任将降 1 级）`,
     })
     return true
   },
@@ -1732,29 +2248,42 @@ export const useGameStore = create<GameState>((set, get) => ({
     return true
   },
 
-  catHarvest: (x, z) => {
-    const { plots, inventory, granary, cats, seasonGoal, cottage, harbor, boat, coins, goalHistory } =
-      get()
+  catHarvest: (x, z, catId) => {
+    const {
+      plots,
+      inventory,
+      granary,
+      cats,
+      seasonGoal,
+      cottage,
+      harbor,
+      boat,
+      coins,
+      goalHistory,
+      day,
+      minuteOfDay,
+    } = get()
     const plot = plots[z]?.[x]
     if (!plot?.cropId) return false
     const crop = getCrop(plot.cropId)
     if (!crop || plot.stage < crop.maxStage) return false
 
     const cap = granaryCapacity(granary)
-    const wheatNow = inventory.wheat ?? 0
-    const space = cap - wheatNow
-    if (space <= 0) {
-      set({ statusMessage: '粮仓已满！先去港口卖掉，或升级/修缮粮仓' })
-      return false
-    }
-
     const farmerLevels = cats
       .filter((c) => (c.role ?? 'farmer') === 'farmer')
       .map((c) => clampRoleLevel(c.roleLevel))
-    const yieldAmt =
-      harvestYield(crop.harvestAmount, cats.length, farmerLevels) +
-      harvestEventBonus(get().gameEvent.kind)
-    const gained = Math.min(yieldAmt, space)
+    const nowAbs = absoluteGameMinute(day, minuteOfDay)
+    const harvester = catId ? cats.find((c) => c.id === catId) : undefined
+    const yieldAmt = Math.max(
+      1,
+      Math.round(
+        (harvestYield(crop.harvestAmount, cats.length, farmerLevels) +
+          harvestEventBonus(get().gameEvent.kind)) *
+          comfortYieldMult(harvester, nowAbs),
+      ),
+    )
+    const buildings = softCapBuildings({ cottage, harbor, boat, granary })
+    const gained = applyWheatHarvestGain(inventory, coins, yieldAmt, cap, buildings)
     const next = clonePlots(plots)
     next[z]![x] = {
       tilled: false,
@@ -1763,18 +2292,24 @@ export const useGameStore = create<GameState>((set, get) => ({
       growProgress: 0,
       watered: false,
     }
-    const nextInv = { ...inventory, wheat: wheatNow + gained }
+    const wheatAdded = gained.added.wheat ?? 0
     const hit = bumpGoalProgress(
       seasonGoal,
       'harvests',
-      nextInv,
-      coins,
+      gained.inventory,
+      gained.coins,
       cottage,
       harbor,
       boat,
+      granary,
       cats,
       goalHistory,
     )
+    const overflowNote = formatOverflowStatus(gained)
+    const baseMsg =
+      cats.length > 1
+        ? `收割小麦 +${wheatAdded}（${cats.length} 猫加成）`
+        : `收割小麦 +${wheatAdded}`
     set({
       plots: next,
       inventory: hit.inventory,
@@ -1782,16 +2317,14 @@ export const useGameStore = create<GameState>((set, get) => ({
       seasonGoal: hit.goal,
       goalHistory: hit.goalHistory,
       statusMessage:
-        hit.note ??
-        (cats.length > 1
-          ? `收割小麦 +${gained}（${cats.length} 猫加成）`
-          : `收割小麦 +${gained}`),
+        hit.note ?? (overflowNote ? `${baseMsg} · ${overflowNote}` : baseMsg),
     })
     return true
   },
 
   catSellWheat: (catId) => {
-    const { inventory, coins, gameEvent, cats, gameOver } = get()
+    const s = get()
+    const { inventory, coins, gameEvent, cats, gameOver } = s
     if (gameOver) return false
     if (catId) {
       const actor = cats.find((c) => c.id === catId)
@@ -1803,7 +2336,11 @@ export const useGameStore = create<GameState>((set, get) => ({
     const wheat = inventory.wheat ?? 0
     const fish = inventory.fish ?? 0
     const merchant = gameEvent.kind === 'merchant'
-    if (wheat <= 0 && !(merchant && fish > 0)) return false
+    const fishReserve = dailyFishNeed(cats)
+    const sellFish = merchant
+      ? Math.min(MERCHANT_FISH_BUY_CAP, Math.max(0, fish - fishReserve))
+      : 0
+    if (wheat <= 0 && sellFish <= 0) return false
 
     const sailors = cats.filter((c) => c.role === 'sailor')
     const sailorMult = tradePriceMult(sailors)
@@ -1811,16 +2348,31 @@ export const useGameStore = create<GameState>((set, get) => ({
       (merchant ? WHEAT_SELL_PRICE * MERCHANT_WHEAT_MULT : WHEAT_SELL_PRICE) * sailorMult,
     )
     const fishPrice = Math.round(MERCHANT_FISH_PRICE * sailorMult)
-    const sellFish = merchant ? Math.min(fish, MERCHANT_FISH_BUY_CAP) : 0
     const wheatEarn = wheat * wheatPrice
     const fishEarn = sellFish * fishPrice
     const earned = wheatEarn + fishEarn
+    const buildings = softCapBuildings(s)
+
+    let inv: Record<string, number> = {
+      ...inventory,
+      wheat: 0,
+      fish: fish - sellFish,
+    }
+    const coin = applyCoinGain(coins, earned, coinSoftCap(buildings))
+    let nextCoins = coin.coins
 
     const trader = catId ? cats.find((c) => c.id === catId) : null
-    const medNow = inventory.medicine ?? 0
-    let medLoot = 0
-    if (trader?.role === 'sailor' && medNow < MEDICINE_SOFT_CAP) {
-      medLoot = Math.min(MEDICINE_SOFT_CAP - medNow, sailorMedicineLoot(trader.roleLevel))
+    let medAdded = 0
+    let overflowNote = ''
+    if (trader?.role === 'sailor') {
+      const medLoot = sailorMedicineLoot(trader.roleLevel)
+      if (medLoot > 0) {
+        const g = applyInventoryGain(inv, nextCoins, { medicine: medLoot }, buildings)
+        inv = g.inventory
+        nextCoins = g.coins
+        medAdded = g.added.medicine ?? 0
+        overflowNote = formatOverflowStatus(g)
+      }
     }
 
     const parts: string[] = []
@@ -1828,46 +2380,69 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (sellFish > 0) parts.push(`鱼肉 ×${sellFish}`)
     const sailorNote =
       sailors.length > 0 ? ` · 船商加成 ×${sailorMult.toFixed(2)}` : ''
-    const lootNote = medLoot > 0 ? ` · 带回药品 ×${medLoot}` : ''
+    const lootNote = medAdded > 0 ? ` · 带回药品 ×${medAdded}` : ''
+    const vaultNote = coin.discarded > 0 ? ' · 金库已满' : ''
+    const overNote = overflowNote ? ` · ${overflowNote}` : ''
     set({
-      coins: coins + earned,
-      inventory: {
-        ...inventory,
-        wheat: 0,
-        fish: fish - sellFish,
-        medicine: medNow + medLoot,
-      },
+      coins: nextCoins,
+      inventory: inv,
       statusMessage: merchant
-        ? `商船收购${parts.join('、')}，+${earned} 金币${sailorNote}${lootNote}`
-        : `港口卖出小麦 ×${wheat}，+${earned} 金币${sailorNote}${lootNote}`,
+        ? `商船收购${parts.join('、')}，+${coin.added} 金币${sailorNote}${lootNote}${vaultNote}${overNote}`
+        : `港口卖出小麦 ×${wheat}，+${coin.added} 金币${sailorNote}${lootNote}${vaultNote}${overNote}`,
     })
     return true
   },
 
   catMine: (catId) => {
-    const { inventory, cats } = get()
+    const s = get()
+    const { inventory, cats, coins, day, minuteOfDay } = s
     const cat = cats.find((c) => c.id === catId)
     if (isSickOffDuty(cat)) {
       set({ statusMessage: '病猫在歇着，治好再挖矿' })
       return false
     }
-    const ore = inventory.ore ?? 0
-    if (ore >= ORE_SOFT_CAP) {
-      set({ statusMessage: '矿石已经囤了不少' })
+    if ((cat?.minesToday ?? 0) >= MINE_DAILY_LIMIT) {
+      set({ statusMessage: '今天已经挖够了，明天再来' })
       return false
     }
-    const gained = scaledYield(MINE_ORE_YIELD, cat?.roleLevel)
+    const nowAbs = absoluteGameMinute(day, minuteOfDay)
+    const rawWant = workYield(MINE_ORE_YIELD, cat?.roleLevel, cat, nowAbs)
+    const want = applyToolsWornYield(rawWant, s.toolsWorn)
+    const gained = applyInventoryGain(inventory, coins, { ore: want }, softCapBuildings(s))
     const name = cat ? getBreed(cat.breedId)?.name ?? '小猫' : '小猫'
+    const nextMines = (cat?.minesToday ?? 0) + 1
+    const boostNote = comfortYieldMult(cat, nowAbs) > 1 ? '（开心加成）' : ''
+    const wornNote = s.toolsWorn && want < rawWant ? ' · 工具钝' : ''
+    const oreAdded = gained.added.ore ?? 0
+    const overflowNote = formatOverflowStatus(gained)
     set({
-      inventory: { ...inventory, ore: Math.min(ORE_SOFT_CAP, ore + gained) },
-      cats: cats.map((c) => (c.id === catId ? { ...c, behavior: 'mine' } : c)),
-      statusMessage: `矿工${name}挖到矿石 +${gained}`,
+      inventory: gained.inventory,
+      coins: gained.coins,
+      cats: cats.map((c) =>
+        c.id === catId ? { ...c, behavior: 'mine', minesToday: nextMines } : c,
+      ),
+      statusMessage: `矿工${name}挖到矿石 +${oreAdded}（今日 ${nextMines}/${MINE_DAILY_LIMIT}${boostNote}${wornNote}）${
+        overflowNote ? ` · ${overflowNote}` : ''
+      }`,
     })
     return true
   },
 
   catChop: (catId, treeIndex) => {
-    const { inventory, cats, trees, seasonGoal, cottage, harbor, boat, coins, goalHistory } = get()
+    const {
+      inventory,
+      cats,
+      trees,
+      seasonGoal,
+      cottage,
+      harbor,
+      boat,
+      granary,
+      coins,
+      goalHistory,
+      day,
+      minuteOfDay,
+    } = get()
     const cat = cats.find((c) => c.id === catId)
     if (isSickOffDuty(cat)) {
       set({ statusMessage: '病猫在歇着，治好再伐木' })
@@ -1892,25 +2467,30 @@ export const useGameStore = create<GameState>((set, get) => ({
       set({ statusMessage: '没有成材的树可砍' })
       return false
     }
-    const wood = inventory.wood ?? 0
-    const atCap = wood >= WOOD_SOFT_CAP
-    const gained = atCap ? 0 : scaledYield(CHOP_WOOD_YIELD, cat?.roleLevel)
+    const nowAbs = absoluteGameMinute(day, minuteOfDay)
+    const rawWant = workYield(CHOP_WOOD_YIELD, cat?.roleLevel, cat, nowAbs)
+    const want = applyToolsWornYield(rawWant, get().toolsWorn)
+    const buildings = softCapBuildings({ cottage, harbor, boat, granary })
+    const gained = applyInventoryGain(inventory, coins, { wood: want }, buildings)
     const name = cat ? getBreed(cat.breedId)?.name ?? '小猫' : '小猫'
     const nextChops = (cat?.chopsToday ?? 0) + 1
     const nextTrees = treeList.map((t, i) => (i === idx ? { stage: 0, growProgress: 0 } : t))
-    const nextInv =
-      gained > 0 ? { ...inventory, wood: Math.min(WOOD_SOFT_CAP, wood + gained) } : inventory
+    const woodAdded = gained.added.wood ?? 0
     const hit = bumpGoalProgress(
       seasonGoal,
       'chops',
-      nextInv,
-      coins,
+      gained.inventory,
+      gained.coins,
       cottage,
       harbor,
       boat,
+      granary,
       cats,
       goalHistory,
     )
+    const boostNote = comfortYieldMult(cat, nowAbs) > 1 ? ' · 开心加成' : ''
+    const wornNote = get().toolsWorn && want < rawWant ? ' · 工具钝' : ''
+    const overflowNote = formatOverflowStatus(gained)
     set({
       inventory: hit.inventory,
       coins: hit.coins,
@@ -1922,15 +2502,16 @@ export const useGameStore = create<GameState>((set, get) => ({
       ),
       statusMessage:
         hit.note ??
-        (atCap
-          ? `伐木工${name}砍下一棵树（木材已满，留下树桩）今日 ${nextChops}/${CHOP_DAILY_LIMIT}`
-          : `伐木工${name}砍下一棵树 +${gained} 木（今日 ${nextChops}/${CHOP_DAILY_LIMIT}）`),
+        `伐木工${name}砍下一棵树 +${woodAdded} 木（今日 ${nextChops}/${CHOP_DAILY_LIMIT}${boostNote}${wornNote}）${
+          overflowNote ? ` · ${overflowNote}` : ''
+        }`,
     })
     return true
   },
 
   catFish: (catId) => {
-    const { inventory, cats } = get()
+    const s = get()
+    const { inventory, cats, coins, day, minuteOfDay } = s
     const cat = cats.find((c) => c.id === catId)
     if (isSickOffDuty(cat)) {
       set({ statusMessage: '病猫在歇着，治好再钓鱼' })
@@ -1940,27 +2521,33 @@ export const useGameStore = create<GameState>((set, get) => ({
       set({ statusMessage: '今天已经钓够了，明天再来' })
       return false
     }
-    const fish = inventory.fish ?? 0
-    if (fish >= FISH_SOFT_CAP) {
-      set({ statusMessage: '鱼肉已经囤了不少' })
-      return false
-    }
-    const base = fishEventYield(FISH_YIELD, get().gameEvent.kind)
-    const gained = scaledYield(base, cat?.roleLevel)
+    const nowAbs = absoluteGameMinute(day, minuteOfDay)
+    const base = fishEventYield(FISH_YIELD, s.gameEvent.kind)
+    const rawWant = workYield(base, cat?.roleLevel, cat, nowAbs)
+    const want = applyToolsWornYield(rawWant, s.toolsWorn)
+    const gained = applyInventoryGain(inventory, coins, { fish: want }, softCapBuildings(s))
     const name = cat ? getBreed(cat.breedId)?.name ?? '小猫' : '小猫'
     const nextCasts = (cat?.castsToday ?? 0) + 1
+    const boostNote = comfortYieldMult(cat, nowAbs) > 1 ? ' · 开心加成' : ''
+    const wornNote = s.toolsWorn && want < rawWant ? ' · 工具钝' : ''
+    const fishAdded = gained.added.fish ?? 0
+    const overflowNote = formatOverflowStatus(gained)
     set({
-      inventory: { ...inventory, fish: Math.min(FISH_SOFT_CAP, fish + gained) },
+      inventory: gained.inventory,
+      coins: gained.coins,
       cats: cats.map((c) =>
         c.id === catId ? { ...c, behavior: 'fish', castsToday: nextCasts } : c,
       ),
-      statusMessage: `渔夫${name}钓到鱼肉 +${gained}（今日 ${nextCasts}/${FISH_DAILY_LIMIT}）`,
+      statusMessage: `渔夫${name}钓到鱼肉 +${fishAdded}（今日 ${nextCasts}/${FISH_DAILY_LIMIT}${boostNote}${wornNote}）${
+        overflowNote ? ` · ${overflowNote}` : ''
+      }`,
     })
     return true
   },
 
   catStudy: (catId) => {
-    const { inventory, cats } = get()
+    const s = get()
+    const { inventory, cats, coins, day, minuteOfDay } = s
     const cat = cats.find((c) => c.id === catId)
     if (isSickOffDuty(cat)) {
       set({ statusMessage: '病猫在歇着，治好再研读' })
@@ -1970,26 +2557,42 @@ export const useGameStore = create<GameState>((set, get) => ({
       set({ statusMessage: '今天已经研读够了，明天再来' })
       return false
     }
-    const knowledge = inventory.knowledge ?? 0
-    if (knowledge >= KNOWLEDGE_SOFT_CAP) {
-      set({ statusMessage: '知识已经囤了不少' })
-      return false
-    }
-    const gained = studyYield(cat?.roleLevel)
+    const nowAbs = absoluteGameMinute(day, minuteOfDay)
+    const want = studyYield(cat?.roleLevel, cat, nowAbs)
+    const gained = applyInventoryGain(inventory, coins, { knowledge: want }, softCapBuildings(s))
     const name = cat ? getBreed(cat.breedId)?.name ?? '小猫' : '小猫'
     const nextStudies = (cat?.studiesToday ?? 0) + 1
+    const boostNote = comfortYieldMult(cat, nowAbs) > 1 ? ' · 开心加成' : ''
+    const knowAdded = gained.added.knowledge ?? 0
+    const overflowNote = formatOverflowStatus(gained)
     set({
-      inventory: { ...inventory, knowledge: Math.min(KNOWLEDGE_SOFT_CAP, knowledge + gained) },
+      inventory: gained.inventory,
+      coins: gained.coins,
       cats: cats.map((c) =>
         c.id === catId ? { ...c, behavior: 'study', studiesToday: nextStudies } : c,
       ),
-      statusMessage: `学者${name}研读获得知识 +${gained}（今日 ${nextStudies}/${STUDY_DAILY_LIMIT}）`,
+      statusMessage: `学者${name}研读获得知识 +${knowAdded}（今日 ${nextStudies}/${STUDY_DAILY_LIMIT}${boostNote}）${
+        overflowNote ? ` · ${overflowNote}` : ''
+      }`,
     })
     return true
   },
 
   catCraftMedicine: (catId) => {
-    const { inventory, cats, gameOver, seasonGoal, cottage, harbor, boat, coins, goalHistory } = get()
+    const {
+      inventory,
+      cats,
+      gameOver,
+      seasonGoal,
+      cottage,
+      harbor,
+      boat,
+      granary,
+      coins,
+      goalHistory,
+      day,
+      minuteOfDay,
+    } = get()
     if (gameOver) return false
     const cat = cats.find((c) => c.id === catId)
     // 医生生病仍可炼药；其他职业不可
@@ -2006,30 +2609,31 @@ export const useGameStore = create<GameState>((set, get) => ({
       set({ statusMessage: `知识不够（需 ${KNOWLEDGE_PER_MEDICINE}），让学者研读` })
       return false
     }
-    const medicine = inventory.medicine ?? 0
-    if (medicine >= MEDICINE_SOFT_CAP) {
-      set({ statusMessage: '药品已经囤了不少' })
-      return false
-    }
-    const gained = medicineCraftYield(cat?.roleLevel)
-    const name = cat ? getBreed(cat.breedId)?.name ?? '小猫' : '小猫'
-    const nextCrafts = (cat?.craftsToday ?? 0) + 1
-    const nextInv = {
+    const nowAbs = absoluteGameMinute(day, minuteOfDay)
+    const want = medicineCraftYield(cat?.roleLevel, cat, nowAbs)
+    const spentInv = {
       ...inventory,
       knowledge: knowledge - KNOWLEDGE_PER_MEDICINE,
-      medicine: Math.min(MEDICINE_SOFT_CAP, medicine + gained),
     }
+    const buildings = softCapBuildings({ cottage, harbor, boat, granary })
+    const gained = applyInventoryGain(spentInv, coins, { medicine: want }, buildings)
+    const name = cat ? getBreed(cat.breedId)?.name ?? '小猫' : '小猫'
+    const nextCrafts = (cat?.craftsToday ?? 0) + 1
+    const medAdded = gained.added.medicine ?? 0
     const hit = bumpGoalProgress(
       seasonGoal,
       'craft_medicine',
-      nextInv,
-      coins,
+      gained.inventory,
+      gained.coins,
       cottage,
       harbor,
       boat,
+      granary,
       cats,
       goalHistory,
     )
+    const boostNote = comfortYieldMult(cat, nowAbs) > 1 ? ' · 开心加成' : ''
+    const overflowNote = formatOverflowStatus(gained)
     set({
       inventory: hit.inventory,
       coins: hit.coins,
@@ -2040,27 +2644,223 @@ export const useGameStore = create<GameState>((set, get) => ({
       ),
       statusMessage:
         hit.note ??
-        `医生${name}炼成药品 +${gained}（-${KNOWLEDGE_PER_MEDICINE} 知识 · 今日 ${nextCrafts}/${CRAFT_DAILY_LIMIT}）`,
+        `医生${name}炼成药品 +${medAdded}（-${KNOWLEDGE_PER_MEDICINE} 知识 · 今日 ${nextCrafts}/${CRAFT_DAILY_LIMIT}${boostNote}）${
+          overflowNote ? ` · ${overflowNote}` : ''
+        }`,
     })
     return true
   },
 
-  catPlay: () => {
-    const { inventory, cats } = get()
+  catPlay: (catId) => {
+    const { inventory, cats, day, minuteOfDay } = get()
     if ((inventory.toy ?? 0) <= 0) return false
+    const cat = cats.find((c) => c.id === catId)
+    const name = cat ? getBreed(cat.breedId)?.name ?? '小猫' : '小猫'
+    const until = absoluteGameMinute(day, minuteOfDay) + COMFORT_BOOST_MINUTES
     set({
       inventory: { ...inventory, toy: (inventory.toy ?? 0) - 1 },
-      statusMessage: `小猫玩了玩具（剩 ${cats.length} 猫更费玩具）`,
+      cats: cats.map((c) =>
+        c.id === catId ? { ...c, behavior: 'play', boostUntil: until } : c,
+      ),
+      statusMessage: `${name}玩了玩具：干活产出 +${Math.round((COMFORT_BOOST_MULT - 1) * 100)}%（约 ${COMFORT_BOOST_MINUTES / 60} 小时）`,
     })
     return true
   },
 
-  catEat: () => {
-    const { inventory } = get()
+  catEat: (catId) => {
+    const { inventory, cats, day, minuteOfDay } = get()
     if ((inventory.snack ?? 0) <= 0) return false
+    const cat = cats.find((c) => c.id === catId)
+    const name = cat ? getBreed(cat.breedId)?.name ?? '小猫' : '小猫'
+    const until = absoluteGameMinute(day, minuteOfDay) + COMFORT_BOOST_MINUTES
     set({
       inventory: { ...inventory, snack: (inventory.snack ?? 0) - 1 },
-      statusMessage: '小猫吃了零食（零食 -1）',
+      cats: cats.map((c) =>
+        c.id === catId ? { ...c, behavior: 'eat', boostUntil: until } : c,
+      ),
+      statusMessage: `${name}吃了零食：干活产出 +${Math.round((COMFORT_BOOST_MULT - 1) * 100)}%（约 ${COMFORT_BOOST_MINUTES / 60} 小时）`,
+    })
+    return true
+  },
+
+  pirateTribute: () => {
+    const s = get()
+    if (s.gameOver || s.majorEvent.kind !== 'pirate' || s.majorEvent.phase !== 'threat') {
+      return false
+    }
+    set(buildTributePatch(s, false))
+    return true
+  },
+
+  pirateFight: () => {
+    const s = get()
+    if (s.gameOver || s.majorEvent.kind !== 'pirate' || s.majorEvent.phase !== 'threat') {
+      return false
+    }
+    const outcome = rollFightOutcome({ cats: s.cats, cottage: s.cottage })
+    set({
+      majorEvent: {
+        ...s.majorEvent,
+        phase: 'fighting',
+        fightEndsAt: Date.now() + PIRATE_FIGHT_MS,
+        pendingOutcome: outcome,
+      },
+      statusMessage: '【海盗】猫群开始反抗…',
+    })
+    return true
+  },
+
+  pirateRevealFight: () => {
+    const s = get()
+    if (
+      s.majorEvent.kind !== 'pirate' ||
+      s.majorEvent.phase !== 'fighting' ||
+      !s.majorEvent.pendingOutcome
+    ) {
+      return false
+    }
+    set(buildFightRevealPatch(s))
+    return true
+  },
+
+  majorAck: () => {
+    const s = get()
+    if (!s.majorEvent.needsAck && s.majorEvent.phase !== 'result') return
+    set({
+      majorEvent: {
+        ...s.majorEvent,
+        kind: 'none',
+        phase: 'idle',
+        needsAck: false,
+        autoResolved: false,
+        resultTitle: '',
+        resultBody: '',
+        pendingOutcome: null,
+        decideBy: 0,
+        fightEndsAt: 0,
+        strayBreedId: '',
+        strayCostFish: 0,
+        strayCostCoins: 0,
+      },
+    })
+  },
+
+  majorPlagueIsolate: () => {
+    const s = get()
+    if (s.gameOver || s.majorEvent.kind !== 'plague' || s.majorEvent.phase !== 'threat') {
+      return false
+    }
+    const cost = plagueIsolateMedicineCost(s.cats)
+    if ((s.inventory.medicine ?? 0) < cost) return false
+    const nowAbs = absoluteGameMinute(s.day, s.minuteOfDay)
+    const applied = applyPlagueIsolate({
+      nowAbs,
+      cats: s.cats,
+      inventory: s.inventory,
+      prev: s.majorEvent,
+    })
+    // 立刻尝试用药治愈（隔离已扣药，再按白天治愈规则）
+    const mid = {
+      ...s,
+      inventory: applied.inventory,
+      majorEvent: applied.majorEvent,
+    }
+    const cured = buildDaytimeCurePatch(mid as GameState)
+    set({
+      inventory: cured?.inventory ?? applied.inventory,
+      cats: cured?.cats ?? s.cats,
+      majorEvent: applied.majorEvent,
+      statusMessage: `【疫病潮】${applied.majorEvent.resultBody}`,
+    })
+    return true
+  },
+
+  majorPlagueEndure: () => {
+    const s = get()
+    if (s.gameOver || s.majorEvent.kind !== 'plague' || s.majorEvent.phase !== 'threat') {
+      return false
+    }
+    const nowAbs = absoluteGameMinute(s.day, s.minuteOfDay)
+    const next = applyPlagueEndure({
+      nowAbs,
+      cats: s.cats,
+      prev: s.majorEvent,
+      auto: false,
+    })
+    set({
+      majorEvent: next,
+      statusMessage: `【疫病潮】${next.resultBody}`,
+    })
+    return true
+  },
+
+  majorStrayAccept: () => {
+    const s = get()
+    if (s.gameOver || s.majorEvent.kind !== 'stray' || s.majorEvent.phase !== 'threat') {
+      return false
+    }
+    const cap = catCapForCottage(s.cottage.level)
+    if (s.cats.length >= cap) {
+      set({
+        statusMessage: `【流浪猫】猫口已满（${s.cats.length}/${cap}），升级小屋后再收留`,
+      })
+      return false
+    }
+    if (!canAffordStray(s.coins, s.inventory, s.majorEvent)) {
+      set({ statusMessage: '【流浪猫】鱼或金币不足，无法收留' })
+      return false
+    }
+    const breed = getBreed(s.majorEvent.strayBreedId)
+    if (!breed) return false
+    const nowAbs = absoluteGameMinute(s.day, s.minuteOfDay)
+    const settled = clearDecisionWindow(s.majorEvent, nowAbs + MAJOR_COOLDOWN_MINUTES)
+    const idx = s.cats.length
+    const newbie: CatInstance = {
+      id: `cat-${breed.id}-stray-${idx}-${nowAbs}`,
+      breedId: breed.id,
+      x: HOME_POS.x + (idx % 3) * 0.7,
+      z: HOME_POS.z + Math.floor(idx / 3) * 0.7,
+      behavior: roleBehavior('civilian'),
+      role: 'civilian',
+      roleLevel: 1,
+      chopsToday: 0,
+      minesToday: 0,
+      castsToday: 0,
+      studiesToday: 0,
+      craftsToday: 0,
+      sick: false,
+      boostUntil: 0,
+    }
+    const body = `${breed.title}「${breed.name}」加入喵圃，现为散民。花费鱼肉 ×${s.majorEvent.strayCostFish}、金币 ×${s.majorEvent.strayCostCoins}。`
+    set({
+      coins: s.coins - s.majorEvent.strayCostCoins,
+      inventory: {
+        ...s.inventory,
+        fish: (s.inventory.fish ?? 0) - s.majorEvent.strayCostFish,
+      },
+      cats: [...s.cats, newbie],
+      majorEvent: {
+        ...settled,
+        phase: 'result',
+        needsAck: true,
+        resultTitle: '收留流浪猫',
+        resultBody: body,
+      },
+      statusMessage: `【流浪猫】${body}`,
+    })
+    return true
+  },
+
+  majorStrayReject: () => {
+    const s = get()
+    if (s.gameOver || s.majorEvent.kind !== 'stray' || s.majorEvent.phase !== 'threat') {
+      return false
+    }
+    const nowAbs = absoluteGameMinute(s.day, s.minuteOfDay)
+    const next = applyStrayReject({ nowAbs, prev: s.majorEvent, auto: false })
+    set({
+      majorEvent: next,
+      statusMessage: '【流浪猫】它们去了别的岛',
     })
     return true
   },

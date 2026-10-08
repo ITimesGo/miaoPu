@@ -4,6 +4,7 @@ import { WorldScene } from './scenes/WorldScene'
 import { DevToolbar } from './ui/DevToolbar'
 import { Hud } from './ui/Hud'
 import { ManualPanel } from './ui/ManualPanel'
+import { MajorEventPanel } from './ui/MajorEventPanel'
 
 export default function App() {
   return (
@@ -23,6 +24,7 @@ export default function App() {
         <WorldScene />
       </Canvas>
       <Hud />
+      <MajorEventPanel />
       <ManualPanel />
       {import.meta.env.DEV && <DevToolbar />}
     </>

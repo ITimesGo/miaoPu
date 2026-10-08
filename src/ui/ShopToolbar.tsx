@@ -1,7 +1,9 @@
-import { useState, type CSSProperties } from 'react'
+import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import { getBreed } from '../game/data/breeds'
 import {
   JOB_ROLES,
+  ROLE_HINT,
   ROLE_LABEL,
   ROLE_SHORT,
   clampRoleLevel,
@@ -16,7 +18,8 @@ import {
   type SellAmountMode,
   type SellResourceId,
 } from '../game/data/sell'
-import type { CatInstance, CatRole } from '../game/types'
+import { coinSoftCap, softCapFor } from '../game/data/economy'
+import { type CatInstance, type CatRole } from '../game/types'
 import { useGameStore } from '../game/state/gameStore'
 import { useDockStore } from './dockStore'
 import { DOCK_BOTTOM, DOCK_BTN_H, DOCK_GAP, DOCK_LEFT, dockBtnOpen } from './dockStyles'
@@ -42,6 +45,88 @@ const stepBtn: CSSProperties = {
   fontWeight: 700,
   lineHeight: 1,
   padding: 0,
+}
+
+function RoleHintMark({ role }: { role: CatRole }) {
+  const [open, setOpen] = useState(false)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const [pos, setPos] = useState({ top: 0, left: 0 })
+
+  useLayoutEffect(() => {
+    if (!open || !btnRef.current) return
+    const r = btnRef.current.getBoundingClientRect()
+    const tipW = 220
+    const tipH = 96
+    const gap = 6
+    const spaceBelow = window.innerHeight - r.bottom
+    const placeBelow = spaceBelow >= tipH + gap
+    let top = placeBelow ? r.bottom + gap : r.top - tipH - gap
+    top = Math.max(8, Math.min(top, window.innerHeight - tipH - 8))
+    let left = r.left
+    left = Math.max(8, Math.min(left, window.innerWidth - tipW - 8))
+    setPos({ top, left })
+  }, [open, role])
+
+  return (
+    <span
+      style={{ position: 'relative', display: 'inline-flex', marginLeft: 4, verticalAlign: 'middle' }}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+    >
+      <button
+        ref={btnRef}
+        type="button"
+        aria-label={`${ROLE_LABEL[role]}说明`}
+        style={{
+          width: 14,
+          height: 14,
+          borderRadius: 999,
+          border: '1px solid rgba(240, 215, 140, 0.55)',
+          background: 'rgba(240, 215, 140, 0.12)',
+          color: '#f0d78c',
+          fontSize: 10,
+          fontWeight: 800,
+          lineHeight: '12px',
+          padding: 0,
+          cursor: 'help',
+        }}
+      >
+        ?
+      </button>
+      {open &&
+        createPortal(
+          <span
+            role="tooltip"
+            style={{
+              position: 'fixed',
+              top: pos.top,
+              left: pos.left,
+              zIndex: 10000,
+              width: 220,
+              padding: '8px 10px',
+              borderRadius: 8,
+              background: 'rgba(12, 22, 18, 0.97)',
+              border: '1px solid #c9a227',
+              boxShadow: '0 8px 20px rgba(0,0,0,0.45)',
+              color: '#f5f0e6',
+              fontSize: 11,
+              fontWeight: 500,
+              lineHeight: 1.45,
+              textAlign: 'left',
+              pointerEvents: 'none',
+              whiteSpace: 'normal',
+            }}
+          >
+            <span style={{ fontWeight: 700, color: '#f0d78c' }}>{ROLE_LABEL[role]}</span>
+            <br />
+            {ROLE_HINT[role]}
+          </span>,
+          document.body,
+        )}
+    </span>
+  )
 }
 
 function RoleRoster() {
@@ -100,6 +185,7 @@ function RoleRoster() {
           <span>
             <span style={{ fontWeight: 700 }}>散</span>
             <span style={{ opacity: 0.75 }}> 散民</span>
+            <RoleHintMark role="civilian" />
             <span style={{ opacity: 0.55, fontSize: 10, marginLeft: 6 }}>闲逛待分配</span>
           </span>
           <span style={{ fontWeight: 800, color: '#a8d4ff', fontVariantNumeric: 'tabular-nums' }}>
@@ -157,6 +243,7 @@ function RoleRoster() {
                 <span style={{ fontSize: 12 }}>
                   <span style={{ fontWeight: 700, marginRight: 4 }}>{ROLE_SHORT[role]}</span>
                   <span style={{ opacity: 0.75 }}>{ROLE_LABEL[role]}</span>
+                  <RoleHintMark role={role} />
                 </span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
                   <button
@@ -299,6 +386,7 @@ function SellRow({
             <button
               key={mode}
               type="button"
+              className="miaopu-press"
               disabled={!can}
               onClick={() => onSell(id, mode)}
               title={can ? `出售 ${p.qty} → +${p.earn} 金` : '无可售'}
@@ -353,6 +441,19 @@ export function ShopToolbar() {
   const ore = inventory.ore ?? 0
   const wood = inventory.wood ?? 0
   const knowledge = inventory.knowledge ?? 0
+  const buildings = {
+    cottage: cottage.level,
+    harbor: harbor.level,
+    boat: boat.level,
+    granary: granary.level,
+  }
+  const coinCap = coinSoftCap(buildings)
+  const oreCap = softCapFor('ore', buildings)!
+  const woodCap = softCapFor('wood', buildings)!
+  const knowCap = softCapFor('knowledge', buildings)!
+  const fishCap = softCapFor('fish', buildings)!
+  const toyCap = softCapFor('toy', buildings)!
+  const snackCap = softCapFor('snack', buildings)!
 
   return (
     <div
@@ -446,7 +547,9 @@ export function ShopToolbar() {
       </div>
 
       <div style={{ fontSize: 10, opacity: 0.7, marginBottom: 8, flexShrink: 0 }}>
-        金 {coins} · 矿 {ore} · 木 {wood} · 知 {knowledge}
+        金 {coins}/{coinCap} · 矿 {ore}/{oreCap} · 木 {wood}/{woodCap} · 知 {knowledge}/
+        {knowCap} · 鱼 {inventory.fish ?? 0}/{fishCap} · 玩 {inventory.toy ?? 0}/{toyCap} · 零{' '}
+        {inventory.snack ?? 0}/{snackCap}
       </div>
 
       <div
@@ -467,20 +570,29 @@ export function ShopToolbar() {
             const needOre = a.oreCost ?? 0
             const needWood = a.woodCost ?? 0
             const needKnow = a.knowledgeCost ?? 0
+            const blocked = Boolean(a.blockedReason)
             const can =
-              coins >= a.price && ore >= needOre && wood >= needWood && knowledge >= needKnow
-            const costParts = [
-              a.price > 0 ? `${a.price}金` : null,
-              needOre > 0 ? `${needOre}矿` : null,
-              needWood > 0 ? `${needWood}木` : null,
-              needKnow > 0 ? `${needKnow}知` : null,
-            ].filter(Boolean)
+              !blocked &&
+              coins >= a.price &&
+              ore >= needOre &&
+              wood >= needWood &&
+              knowledge >= needKnow
+            const costBits: Array<{ text: string; short: boolean }> = []
+            if (a.price > 0) costBits.push({ text: `${a.price}金`, short: coins < a.price })
+            if (needOre > 0) costBits.push({ text: `${needOre}矿`, short: ore < needOre })
+            if (needWood > 0) costBits.push({ text: `${needWood}木`, short: wood < needWood })
+            if (needKnow > 0)
+              costBits.push({ text: `${needKnow}知`, short: knowledge < needKnow })
             return (
               <button
                 key={a.id}
                 type="button"
-                onClick={() => shopBuy(a.id)}
-                title={a.desc}
+                className="miaopu-press"
+                disabled={!can}
+                onClick={() => {
+                  if (!can) return
+                  shopBuy(a.id)
+                }}
                 style={{
                   display: 'flex',
                   flexDirection: 'column',
@@ -500,7 +612,7 @@ export function ShopToolbar() {
                   }`,
                   background: can ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.22)',
                   color: '#f5f0e6',
-                  cursor: can ? 'pointer' : 'default',
+                  cursor: can ? 'pointer' : 'not-allowed',
                   opacity: can ? 1 : 0.55,
                   textAlign: 'left',
                 }}
@@ -515,11 +627,23 @@ export function ShopToolbar() {
                   }}
                 >
                   <span style={{ fontWeight: 700, fontSize: 13 }}>{a.label}</span>
-                  <span style={{ fontSize: 11, color: '#f0d78c', whiteSpace: 'nowrap' }}>
-                    {costParts.length > 0 ? costParts.join(' · ') : '免费'}
+                  <span style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
+                    {costBits.length === 0
+                      ? '免费'
+                      : costBits.map((c, i) => (
+                          <span key={c.text}>
+                            {i > 0 ? ' · ' : ''}
+                            <span style={{ color: c.short ? '#ffb090' : '#f0d78c' }}>{c.text}</span>
+                          </span>
+                        ))}
                   </span>
                 </div>
                 <span style={{ fontSize: 10, opacity: 0.72, lineHeight: 1.35 }}>{a.desc}</span>
+                {a.blockedReason ? (
+                  <span style={{ fontSize: 10, color: '#ffb090', fontWeight: 600 }}>
+                    {a.blockedReason}
+                  </span>
+                ) : null}
               </button>
             )
           })}

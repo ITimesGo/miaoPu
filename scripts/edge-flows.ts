@@ -12,8 +12,51 @@ import {
   type SeasonGoal,
 } from '../src/game/data/goals'
 import { buildDepartVoyage, canDepartVoyage, settleVoyageReturn } from '../src/game/data/voyage'
-import { emptyBoatVoyage, type CatInstance } from '../src/game/types'
+import {
+  catCapForCottage,
+  COTTAGE_UPGRADE_PRICE,
+  emptyBoatVoyage,
+  SEED_PACK_PRICE,
+  type CatInstance,
+} from '../src/game/types'
 import { useGameStore } from '../src/game/state/gameStore'
+import {
+  applyStrayReject,
+  canRollPlague,
+  canRollStray,
+  clearDecisionWindow,
+  emptyMajorEvent,
+  MAJOR_COOLDOWN_MINUTES,
+  pickMajorEventKind,
+  plagueIsolateMedicineCost,
+} from '../src/game/data/majorEvents'
+import {
+  applyCoinGain,
+  applyComfortConsume,
+  applyInventoryGain,
+  applyWheatHarvestGain,
+  coinSoftCap,
+  COIN_SOFT_CAP,
+  DEFAULT_SOFT_CAP_BUILDINGS,
+  FISH_SOFT_CAP,
+  softCapDeltaHint,
+  softCapFor,
+} from '../src/game/data/economy'
+import { getShopActions } from '../src/game/data/shop'
+import {
+  PIRATE_WEALTH_THRESHOLD,
+  rollPirateChance,
+} from '../src/game/data/pirates'
+import {
+  heatingWoodNeed,
+  STARTING_WOOD,
+} from '../src/game/data/heating'
+import {
+  applyToolsWornYield,
+  STARTING_ORE,
+  toolMaintOreNeed,
+} from '../src/game/data/tools'
+import { createFreshPersistSlice } from '../src/game/state/saveGame'
 
 let passed = 0
 let failed = 0
@@ -36,10 +79,12 @@ function cat(partial: Partial<CatInstance> & Pick<CatInstance, 'id' | 'role'>): 
     behavior: 'idle',
     roleLevel: 1,
     chopsToday: 0,
+    minesToday: 0,
     castsToday: 0,
     studiesToday: 0,
     craftsToday: 0,
     sick: false,
+    boostUntil: 0,
     ...partial,
   }
 }
@@ -53,6 +98,7 @@ function baseVoyageCtx(over: Partial<Parameters<typeof canDepartVoyage>[0]> = {}
     harbor: { level: 1 },
     boat: { level: 1 },
     boatVoyage: emptyBoatVoyage(0),
+    buildings: DEFAULT_SOFT_CAP_BUILDINGS,
     ...over,
   }
 }
@@ -402,6 +448,170 @@ console.log('\n=== Store：completeGoal / rerollGoal ===')
 
   useGameStore.getState().devSet({ rerollGoal: true })
   assert(useGameStore.getState().seasonGoal.completed === false, '重抽目标未完成')
+}
+
+console.log('\n=== 大事抽签与疫病/投奔 ===')
+{
+  assert(pickMajorEventKind({ pirate: 0, plague: 0, stray: 0 }, () => 0) === null, '全 0 → null')
+  assert(
+    pickMajorEventKind({ pirate: 0, plague: 0.5, stray: 0 }, () => 0.9) === null,
+    'r>=total → null',
+  )
+  let i = 0
+  const seq = [0.0, 0.1]
+  const kind = pickMajorEventKind({ pirate: 0, plague: 0.5, stray: 0.5 }, () => seq[i++]!)
+  assert(kind === 'plague', '第二次 rng 选 plague')
+
+  const four = [
+    cat({ id: 'a', role: 'farmer' }),
+    cat({ id: 'b', role: 'miner' }),
+    cat({ id: 'c', role: 'fisher' }),
+    cat({ id: 'd', role: 'scholar' }),
+  ]
+  const six = [
+    ...four,
+    cat({ id: 'e', role: 'doctor' }),
+    cat({ id: 'f', role: 'lumberjack' }),
+  ]
+  assert(
+    canRollPlague({ day: 20, cats: four, inventory: { medicine: 0 } }) === false,
+    '猫不足6不疫病',
+  )
+  assert(
+    canRollPlague({ day: 20, cats: six, inventory: { medicine: 0 } }) === true,
+    '药紧可疫病',
+  )
+  assert(
+    canRollPlague({ day: 10, cats: six, inventory: { medicine: 0 } }) === false,
+    '过早不疫病',
+  )
+  assert(plagueIsolateMedicineCost(six) >= 2, '隔离药量至少 2')
+
+  assert(
+    canRollStray({
+      day: 16,
+      cats: [cat({ id: 'a', role: 'farmer' })],
+      cottageLevel: 1,
+      inventory: { fish: 20, toy: 1, snack: 1 },
+    }) === true,
+    '空位+物资可投奔',
+  )
+  const rejected = applyStrayReject({
+    nowAbs: 100,
+    prev: emptyMajorEvent(),
+    auto: true,
+  })
+  assert(rejected.nextEligibleAt === 100 + MAJOR_COOLDOWN_MINUTES, '婉拒写冷却')
+
+  const withPlague = {
+    ...emptyMajorEvent(),
+    plagueUntil: 999,
+    plagueSickMult: 2.2,
+  }
+  const cleared = clearDecisionWindow(withPlague, 50)
+  assert(cleared.plagueUntil === 999 && cleared.plagueSickMult === 2.2, '清窗保留疫病残留')
+  assert(cleared.phase === 'idle' && cleared.kind === 'none', '清窗后 idle')
+}
+
+console.log('\n=== 经济夹帽与溢出 ===')
+{
+  const b0 = DEFAULT_SOFT_CAP_BUILDINGS
+  const a = applyInventoryGain({ fish: FISH_SOFT_CAP }, 100, { fish: 3 }, b0)
+  assert(a.inventory.fish === FISH_SOFT_CAP, '鱼不加超帽')
+  assert(a.coinFromOverflow === 12, '3鱼溢出兑金 12')
+  const b = applyCoinGain(COIN_SOFT_CAP, 50, COIN_SOFT_CAP)
+  assert(b.coins === COIN_SOFT_CAP && b.discarded === 50, '金库满丢弃')
+  const w = applyWheatHarvestGain({ wheat: 8 }, 0, 5, 8, b0)
+  assert(w.inventory.wheat === 8 && w.coinFromOverflow === 20, '满仓麦兑金')
+  const c = applyComfortConsume({ snack: 1, toy: 10 }, 3)
+  assert(c.snackUsed === 1 && c.toyUsed === 2, '舒适先零食后玩具合计扣')
+  assert((c.inventory.snack ?? 0) === 0 && (c.inventory.toy ?? 0) === 8, '舒适库存正确')
+
+  const b1 = { cottage: 1, harbor: 1, boat: 1, granary: 0 }
+  assert(coinSoftCap(b1) === 3000, '开局金库')
+  assert(softCapFor('ore', b1) === 40, '未建仓矿=40')
+  const b3 = { cottage: 3, harbor: 1, boat: 1, granary: 0 }
+  assert(coinSoftCap(b3) === 4200, '小屋3金库')
+  const bh3 = { cottage: 1, harbor: 3, boat: 1, granary: 0 }
+  assert(coinSoftCap(bh3) === 4200, '码头3金库')
+  assert(softCapFor('fish', bh3) === 64, '码头3鱼帽')
+  assert(softCapFor('medicine', bh3) === 40, '药帽仍随货船不随码头')
+  const g8 = { cottage: 1, harbor: 1, boat: 1, granary: 8 }
+  assert(softCapFor('ore', g8) === 96 && softCapFor('wood', g8) === 96, '仓8矿木')
+  const gain = applyInventoryGain({ fish: 64 }, 0, { fish: 2 }, bh3)
+  assert(gain.inventory.fish === 64 && gain.coinFromOverflow === 8, '动态帽溢出兑金')
+
+  const before = { cottage: 1, harbor: 1, boat: 1, granary: 0 }
+  const afterCottage = { ...before, cottage: 2 }
+  assert(
+    softCapDeltaHint(before, afterCottage) ===
+      '玩具 +4 · 零食 +4 · 知识 +8 · 金库 +600',
+    '小屋1→2且港1：玩零知金库',
+  )
+
+  const beforeHarborHigh = { cottage: 1, harbor: 3, boat: 1, granary: 0 }
+  const afterCottage2 = { ...beforeHarborHigh, cottage: 2 }
+  const hintCottageUnderHarbor = softCapDeltaHint(beforeHarborHigh, afterCottage2)
+  assert(
+    hintCottageUnderHarbor.includes('玩具 +4') && hintCottageUnderHarbor.includes('知识 +8'),
+    '港高时仍涨玩知',
+  )
+  assert(!hintCottageUnderHarbor.includes('金库'), '港≥2升小屋不含金库')
+
+  assert(
+    softCapDeltaHint(before, { ...before, harbor: 2 }) === '鱼肉 +8 · 金库 +600',
+    '港口1→2',
+  )
+  assert(softCapDeltaHint(before, { ...before, boat: 2 }) === '药品 +8', '货船1→2')
+  assert(softCapDeltaHint(before, { ...before, granary: 1 }) === '', '建仓0→1无软帽涨')
+  assert(
+    softCapDeltaHint({ ...before, granary: 1 }, { ...before, granary: 2 }) ===
+      '矿石 +8 · 木材 +8',
+    '仓1→2矿木',
+  )
+
+  const shopActions = getShopActions({
+    granary: { level: 0, condition: 100 },
+    harbor: { level: 1 },
+    boat: { level: 1 },
+    cottage: { level: 1 },
+    ownedBreedIds: [],
+    catCount: 1,
+    cats: [],
+  })
+  const cottageUp = shopActions.find((a) => a.id === 'cottage_upgrade')
+  assert(
+    !!cottageUp &&
+      cottageUp.desc.includes('玩具 +4') &&
+      cottageUp.desc.includes('金库 +600'),
+    '商店小屋desc含软帽增量',
+  )
+  const granaryBuy = shopActions.find((a) => a.id === 'granary_buy')
+  assert(!!granaryBuy && !granaryBuy.desc.includes('矿石'), '建仓desc无矿石增量')
+
+  const pAt = (wealth: number) => rollPirateChance(wealth, {})
+  assert(Math.abs(pAt(PIRATE_WEALTH_THRESHOLD) - 0.05) < 1e-9, '海盗刚过线≈5%')
+  assert(Math.abs(pAt(PIRATE_WEALTH_THRESHOLD * 2) - 0.08) < 1e-9, '海盗约2×富裕≈8%')
+  assert(pAt(PIRATE_WEALTH_THRESHOLD * 20) === 0.14, '海盗封顶14%')
+
+  assert(catCapForCottage(1) === 5 && catCapForCottage(8) === 12, '猫口 Lv1=5 / Lv8=12')
+  assert(COTTAGE_UPGRADE_PRICE[2] === 150 && SEED_PACK_PRICE === 15, '消耗轻度抬高抽样')
+  assert(COTTAGE_UPGRADE_PRICE[8] === 3205, '小屋满级升级陡坡')
+
+  assert(heatingWoodNeed(1, 'spring') === 1, '非冬取暖1猫=1木')
+  assert(heatingWoodNeed(3, 'winter') === 6, '冬天取暖3猫=6木')
+  assert(createFreshPersistSlice().inventory.wood === STARTING_WOOD, '开局自带木材')
+  assert(createFreshPersistSlice().inventory.ore === STARTING_ORE, '开局自带矿石')
+  assert(
+    toolMaintOreNeed([
+      { role: 'miner' },
+      { role: 'farmer' },
+      { role: 'fisher' },
+    ]) === 2,
+    '工具保养只计户外工',
+  )
+  assert(applyToolsWornYield(2, true) === 1, '工具钝产量×0.85')
+  assert(applyToolsWornYield(2, false) === 2, '工具好产量不变')
 }
 
 console.log(`\n======== 结果: ${passed} 通过, ${failed} 失败 ========`)

@@ -125,7 +125,7 @@ function performTask(current: CatTask, catId: string, g: Group) {
       s.catWater(current.plotX, current.plotZ)
       break
     case 'harvest':
-      s.catHarvest(current.plotX, current.plotZ)
+      s.catHarvest(current.plotX, current.plotZ, catId)
       break
     case 'trade':
       s.catSellWheat(catId)
@@ -149,10 +149,10 @@ function performTask(current: CatTask, catId: string, g: Group) {
       s.catCraftMedicine(catId)
       break
     case 'play':
-      s.catPlay()
+      s.catPlay(catId)
       break
     case 'eat':
-      s.catEat()
+      s.catEat(catId)
       break
     case 'watchFish': {
       const pdx = POND_POS.x - g.position.x
@@ -201,6 +201,8 @@ function SingleCat({ cat, index }: { cat: CatInstance; index: number }) {
   const dwellUntil = useRef(0)
   const dwellLen = useRef(0.55)
   const walkSpeed = useRef(1.85)
+  /** 跟随 timeScale 的模拟时钟（秒），用于干活停顿计时 */
+  const simTime = useRef(0)
   const actionDone = useRef(false)
   const syncedBehavior = useRef(cat.behavior)
   const placed = useRef(false)
@@ -218,15 +220,31 @@ function SingleCat({ cat, index }: { cat: CatInstance; index: number }) {
     placed.current = true
   }, [cat.x, cat.z])
 
-  useFrame((state, delta) => {
+  useFrame((_state, delta) => {
     const g = group.current
     if (!g || !breed) return
 
     const store = useGameStore.getState()
-    const now = state.clock.elapsedTime
+    const scale = Math.max(0, store.timeScale)
+    const dt = delta * scale
+    simTime.current += dt
+    const now = simTime.current
     const minute = store.minuteOfDay
     const hour = minute / 60
     const isNight = hour < 6 || hour >= 20
+
+    // 暂停时不移动、不推进任务（时钟也已停）
+    if (scale <= 0) {
+      const current = task.current
+      const moving = false
+      const motionNext = current ? toMotion(current, moving) : 'idle'
+      motionRef.current = motionNext
+      if (motionNext !== lastMotion.current) {
+        lastMotion.current = motionNext
+        setMotion(motionNext)
+      }
+      return
+    }
 
     const precipitating = isPrecipitating(store.weather)
     const bedNow = sleepPosForCat(index)
@@ -284,9 +302,16 @@ function SingleCat({ cat, index }: { cat: CatInstance; index: number }) {
           role: live?.role ?? cat.role ?? 'farmer',
           farmerCount: farmers.length,
           chopsToday: live?.chopsToday ?? cat.chopsToday ?? 0,
+          minesToday: live?.minesToday ?? cat.minesToday ?? 0,
           castsToday: live?.castsToday ?? cat.castsToday ?? 0,
           studiesToday: live?.studiesToday ?? cat.studiesToday ?? 0,
           craftsToday: live?.craftsToday ?? cat.craftsToday ?? 0,
+          buildings: {
+            cottage: store.cottage.level,
+            harbor: store.harbor.level,
+            boat: store.boat.level,
+            granary: store.granary.level,
+          },
           merchantHere: store.gameEvent?.kind === 'merchant',
         })
         if (nextTask.kind === 'sleep' && !indoors.current) {
@@ -361,10 +386,10 @@ function SingleCat({ cat, index }: { cat: CatInstance; index: number }) {
       const midDoor = waypoints.current.length > 1 && !lastWp
       const base = midDoor ? 1.25 : current.kind === 'sleep' ? 1.5 : walkSpeed.current
       const speed = base
-      const step = Math.min(dist, speed * delta)
+      const step = Math.min(dist, speed * dt)
       g.position.x += (dx / dist) * step
       g.position.z += (dz / dist) * step
-      g.rotation.y = dampYaw(g.rotation.y, Math.atan2(dx, dz), delta)
+      g.rotation.y = dampYaw(g.rotation.y, Math.atan2(dx, dz), dt)
       if (syncedBehavior.current !== 'walk') {
         syncedBehavior.current = 'walk'
         store.setCatPose(cat.id, g.position.x, g.position.z, 'walk')
