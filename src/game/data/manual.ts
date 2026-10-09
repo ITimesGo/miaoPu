@@ -25,6 +25,7 @@ import {
   PIRATE_WEALTH_THRESHOLD,
 } from './pirates'
 import { CAT_BREEDS } from './breeds'
+import { GAME_LOG_LIMIT } from './gameLog'
 import { recruitPriceFor } from './shop'
 import {
   coinSoftCap,
@@ -64,8 +65,12 @@ import {
   POCKET_WHEAT_CAP,
   RECRUIT_PRICE_GROWTH,
   HARBOR_MAX_LEVEL,
+  CHOP_WOOD_YIELD,
+  FISH_YIELD,
   MINE_DAILY_LIMIT,
+  MINE_ORE_YIELD,
   MINUTES_PER_DAY,
+  WORK_RESERVE_DAYS,
   ROLE_CONSUME_PER_LEVEL,
   ROLE_MAX_LEVEL,
   ROLE_UPGRADE_KNOWLEDGE,
@@ -137,7 +142,8 @@ export const MANUAL_SECTIONS: ManualSection[] = [
       `开局一只猫、约 80 金；第二只猫（如「${firstPaidBreed.name}」）到手约 ${secondCatPrice} 金，开局金币不够，收完第一波麦卖掉后通常就能扩编。`,
       `每季约 ${DAYS_PER_SEASON} 天。季节目标种类含：囤鱼/麦/矿/木/金币/知识，小屋/港口/货船等级，猫群数量，以及本季出航、炼药、收获、伐木次数；同种类还有多档数值。四季合计约 ${seasonGoalPoolSize()} 条候选，并避开近 ${GOAL_HISTORY_LIMIT} 季已出现的组合。完成后可得金币、药品或知识。`,
       '若猫全部失散或饿死，会进入全灭；可重新开始。',
-      '进度会自动保存在本浏览器本地；刷新或下次打开同一地址会继续。点「重新开始」会清空存档并开新局。清除站点数据也会丢掉进度。',
+      '进度会自动保存在本浏览器本地；刷新或下次打开同一地址会继续。左下角「重开」（或全灭后的「重新开始」）会清空存档并开新局，需二次确认。清除站点数据也会丢掉进度。',
+      `左下角「日志」可展开大事记：日结、购买花费、病死/走失、出海、海盗/疫病/流浪猫、季节目标等；最多保留 ${GAME_LOG_LIMIT} 条，随存档保存，重开清空。病死与海盗等严重条目会醒目标注，可点「只看严重」筛选；有新严重事件时日志按钮会显示红点计数。`,
     ],
   },
   {
@@ -145,7 +151,7 @@ export const MANUAL_SECTIONS: ManualSection[] = [
     title: '时间与季节',
     paragraphs: [
       `游戏内一天共 ${MINUTES_PER_DAY} 分钟；清晨到夜晚循环，影响猫咪作息与出海窗口。`,
-      '界面可调流速：正式版提供一倍 / 二倍；倍速会同步加快游戏时钟、作物/树木生长、猫咪走路与干活节奏。',
+      '左上角信息板可看资源、时钟与流速：正式版提供一倍 / 二倍；倍速会同步加快游戏时钟、作物/树木生长、猫咪走路与干活节奏。猫群名单可点「猫群 ▾」展开；玩具零食在商店查看。',
       `一季 ${DAYS_PER_SEASON} 天，四季轮转。天气会下雨或晴朗，偶尔雨后出虹；不影响核心玩法，但氛围会变。`,
       '跨日结算时消耗鱼肉口粮、可能生病/治愈，并推进季节目标进度。',
       `偶发大事（海盗 / 疫病潮 / 流浪猫）同时最多一件决策窗；约 ${Math.round(MAJOR_DECIDE_MS / 60000)} 分钟真实倒计时，超时默认：海盗献贡、疫病硬扛、流浪猫婉拒。结算后共享冷却约 ${(MAJOR_COOLDOWN_MINUTES / MINUTES_PER_DAY / DAYS_PER_SEASON).toFixed(1)} 季。被动商船/丰收/欠收进行中时不新开大事。`,
@@ -170,7 +176,7 @@ export const MANUAL_SECTIONS: ManualSection[] = [
       `到顶后仍可继续生产：超额按溢出兑金（鱼/麦各 ${OVERFLOW_COIN_RATE.fish}、矿/木各 ${OVERFLOW_COIN_RATE.ore}、知识 ${OVERFLOW_COIN_RATE.knowledge}、药品 ${OVERFLOW_COIN_RATE.medicine}、玩具/零食各 ${OVERFLOW_COIN_RATE.toy}）；金库也满时无法兑金。商店买玩具/零食到顶则无法再买。`,
       `麦种可在商店购买：${SEED_PACK_PRICE} 金一包，共 ${SEED_PACK_AMOUNT} 粒。知识多由学者研读获得，用于职业升级与建筑升级；知识与药品也可在商店回收页折价出售。`,
       `玩具与零食：猫玩耍或加餐后约 ${comfortBoostHours} 小时内，采矿/伐木/钓鱼/研读/炼药/收麦产出约 +${comfortBoostPct}%；再玩再吃会刷新时长。日结舒适合计消耗（先零食后玩具），口粮仍靠鱼肉。`,
-      `矿工每日最多采矿 ${MINE_DAILY_LIMIT} 次（与伐木/钓鱼等日限类似）。药品只用于治病，不能当饭吃。`,
+      `矿工/伐木/渔夫每次基础产出约 ${MINE_ORE_YIELD}/${CHOP_WOOD_YIELD}/${FISH_YIELD}，每日最多各 ${MINE_DAILY_LIMIT} 次。鱼/木/矿低于约 ${WORK_RESERVE_DAYS} 日消耗储备时，对应户外工会少摸鱼、优先打满日限。药品只用于治病，不能当饭吃。`,
     ],
   },
   {
@@ -181,7 +187,7 @@ export const MANUAL_SECTIONS: ManualSection[] = [
       '商店「猫咪」页的职业编制：+ 从散民就任，− 解除回散民；就任与解除均不消耗知识。没有散民时须先 − 解除其他职业。点职业旁「？」可看职责说明（如渔夫钓鱼补口粮，船商负责贸易加成与出海）。',
       '解除时保留职业等级；再次就任任意职业时等级降 1 级（最低仍为 Lv.1）。例如 Lv.3 矿工卸任再当农夫 → Lv.2。',
       `职业等级最高 Lv.${ROLE_MAX_LEVEL}。每升一级产能约 +${yieldPct}%，日耗约 +${consumePct}%。升级耗知识，例如升到 Lv.2 需 ${ROLE_UPGRADE_KNOWLEDGE[2]} 知识。`,
-      '农夫耕田、矿工采矿、伐木工砍树（补建筑与取暖木材）、渔夫钓鱼、学者研读、船商参与贸易加成、医生炼药并降低治病药耗。生病时会停工，需用药治愈。',
+      '农夫耕田、矿工采矿、伐木工砍树（补建筑与取暖木材）、渔夫钓鱼、学者研读、船商参与贸易加成、医生炼药并降低治病药耗。生病时会停工，需用药治愈。学者/船商/医生不产口粮与取暖资源，猫口多时请保证渔夫与伐木有余力。',
     ],
   },
   {
@@ -208,6 +214,7 @@ export const MANUAL_SECTIONS: ManualSection[] = [
     title: '出海贸易',
     paragraphs: [
       `需有健康船商，且约在白天 7–18 点、船在港且冷却结束。货船 Lv.1 最多装鱼 ${BOAT_FISH_CAP[1]}、木 ${BOAT_WOOD_CAP[1]}；有货才能出航。`,
+      '装货会预留明日口粮鱼与当日取暖木，只装超出预留的部分；预留后无货则暂缓出航。',
       `Lv.1 约航行 ${voyageHours} 小时游戏时间，回港后码头冷却约 ${cooldownHours} 小时（等级越高越快）。回港结算金币，偶有药品。`,
       '船商等级会提高贸易售价加成。季节目标里的「出航次数」在成功回港时累计；「收获」「伐木」在对应行动成功时累计。',
     ],

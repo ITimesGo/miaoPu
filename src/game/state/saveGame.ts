@@ -33,6 +33,7 @@ import { absoluteGameMinute, rollClearGap, type WeatherKind } from '../data/weat
 import { createStarterCat } from '../data/breeds'
 import { STARTING_WOOD } from '../data/heating'
 import { STARTING_ORE } from '../data/tools'
+import { sanitizeGameLog, type GameLogEntry } from '../data/gameLog'
 
 export const SAVE_VERSION = 1
 export const SAVE_KEY = `miaopu.save.v${SAVE_VERSION}`
@@ -102,6 +103,8 @@ export type PersistSlice = {
   catRecentLineIds: Record<string, string[]>
   /** 工具保养不足：次日矿工/伐木/渔夫产量降低 */
   toolsWorn: boolean
+  /** 大事记（最多 500 条） */
+  gameLog: GameLogEntry[]
 }
 
 type SaveFile = {
@@ -166,6 +169,7 @@ export function createFreshPersistSlice(): PersistSlice {
     recentLineIds: [],
     catRecentLineIds: {},
     toolsWorn: false,
+    gameLog: [],
   }
 }
 
@@ -205,6 +209,7 @@ export function pickPersistSlice(s: PersistSlice): PersistSlice {
       Object.entries(s.catRecentLineIds).map(([k, v]) => [k, [...v]]),
     ),
     toolsWorn: s.toolsWorn,
+    gameLog: s.gameLog.map((e) => ({ ...e })),
   }
 }
 
@@ -448,6 +453,7 @@ function sanitizeSlice(raw: unknown): PersistSlice | null {
           )
         : {},
     toolsWorn: asBool(d.toolsWorn, false),
+    gameLog: sanitizeGameLog(d.gameLog),
   }
 }
 

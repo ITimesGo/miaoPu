@@ -5,6 +5,10 @@ import { getBreed } from '../../game/data/breeds'
 import { isPrecipitating } from '../../game/data/weather'
 import type { DialogueSituation } from '../../game/data/catDialogue'
 import { FOREST_LAYOUT } from '../../game/data/forest'
+import { dailyFishNeed } from '../../game/data/careers'
+import { heatingWoodNeed } from '../../game/data/heating'
+import { toolMaintOreNeed } from '../../game/data/tools'
+import { reserveNeedFor } from '../../game/data/workPressure'
 import { pickCatTask, pruneCatClaims, releaseCatClaims, type CatTask } from '../../game/systems/catFarmAI'
 import { useGameStore } from '../../game/state/gameStore'
 import { CatModel, type CatMotion } from '../models/Cat'
@@ -312,6 +316,11 @@ function SingleCat({ cat, index }: { cat: CatInstance; index: number }) {
             boat: store.boat.level,
             granary: store.granary.level,
           },
+          oreReserveNeed: reserveNeedFor(toolMaintOreNeed(store.cats)),
+          woodReserveNeed: reserveNeedFor(
+            heatingWoodNeed(store.cats.length, store.season),
+          ),
+          fishReserveNeed: reserveNeedFor(dailyFishNeed(store.cats)),
           merchantHere: store.gameEvent?.kind === 'merchant',
         })
         if (nextTask.kind === 'sleep' && !indoors.current) {

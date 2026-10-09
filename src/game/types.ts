@@ -471,11 +471,11 @@ export const SEED_PACK_AMOUNT = 6
 export const TOY_PRICE = 50
 export const SNACK_PRICE = 40
 
-export const MINE_ORE_YIELD = 2
+export const MINE_ORE_YIELD = 3
 export const ORE_SOFT_CAP = 40
 /** 每只猫每天最多采矿次数 */
 export const MINE_DAILY_LIMIT = 5
-export const CHOP_WOOD_YIELD = 2
+export const CHOP_WOOD_YIELD = 3
 export const WOOD_SOFT_CAP = 40
 /** 每只猫每天最多砍几棵树 */
 export const CHOP_DAILY_LIMIT = 5
@@ -486,11 +486,19 @@ export const CHOP_SLOT_MINUTES = Math.floor(
   (CHOP_DAY_END_MINUTE - CHOP_DAY_START_MINUTE) / CHOP_DAILY_LIMIT,
 )
 
-export const FISH_YIELD = 2
+export const FISH_YIELD = 3
 export const FISH_SOFT_CAP = 48
 export const FISH_DAILY_LIMIT = 5
 /** 每只猫每天日结消耗的鱼肉（再乘职业日耗倍率） */
 export const FISH_DAILY_PER_CAT = 1
+
+/** 生存库存「约 N 日储备」：低于此线户外工少摸鱼 */
+export const WORK_RESERVE_DAYS = 2
+/** 储备不足时的休闲概率 */
+export const LEISURE_WHEN_TIGHT = 0.05
+export const LEISURE_WHEN_LOW = 0.22
+export const LEISURE_WHEN_HALF = 0.42
+export const LEISURE_WHEN_FULL = 0.78
 
 export const STUDY_YIELD = 1
 export const KNOWLEDGE_SOFT_CAP = 50

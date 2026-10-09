@@ -10,23 +10,47 @@ import {
   type BoatVoyage,
   type CatInstance,
   type LevelState,
+  type Season,
 } from '../types'
-import { clampRoleLevel, tradePriceMult } from './careers'
+import { clampRoleLevel, dailyFishNeed, tradePriceMult } from './careers'
 import {
   applyInventoryGain,
   formatOverflowStatus,
   type SoftCapBuildings,
 } from './economy'
+import { heatingWoodNeed } from './heating'
 
 export interface VoyageContext {
   nowAbs: number
   minuteOfDay: number
+  season: Season
   inventory: Record<string, number>
   cats: CatInstance[]
   harbor: LevelState
   boat: LevelState
   boatVoyage: BoatVoyage
   buildings: SoftCapBuildings
+}
+
+/** 出海预留：明日口粮鱼 + 今日取暖木；可装 = 库存 − 预留，再夹船舱 */
+export function voyageLoadableCargo(ctx: {
+  inventory: Record<string, number>
+  cats: CatInstance[]
+  season: Season
+  boatLevel: number
+}): { fishLoad: number; woodLoad: number; fishReserve: number; woodReserve: number } {
+  const fishReserve = dailyFishNeed(ctx.cats)
+  const woodReserve = heatingWoodNeed(ctx.cats.length, ctx.season)
+  const fishCap = BOAT_FISH_CAP[ctx.boatLevel] ?? 4
+  const woodCap = BOAT_WOOD_CAP[ctx.boatLevel] ?? 1
+  const fishAvail = Math.max(0, (ctx.inventory.fish ?? 0) - fishReserve)
+  const woodAvail = Math.max(0, (ctx.inventory.wood ?? 0) - woodReserve)
+  return {
+    fishReserve,
+    woodReserve,
+    fishLoad: Math.min(fishAvail, fishCap),
+    woodLoad: Math.min(woodAvail, woodCap),
+  }
 }
 
 export function canDepartVoyage(ctx: VoyageContext): boolean {
@@ -38,10 +62,12 @@ export function canDepartVoyage(ctx: VoyageContext): boolean {
     (c) => c.role === 'sailor' && !c.sick && clampRoleLevel(c.roleLevel) >= 1,
   )
   if (!sailorOk) return false
-  const fishCap = BOAT_FISH_CAP[ctx.boat.level] ?? 4
-  const woodCap = BOAT_WOOD_CAP[ctx.boat.level] ?? 1
-  const fishLoad = Math.min(ctx.inventory.fish ?? 0, fishCap)
-  const woodLoad = Math.min(ctx.inventory.wood ?? 0, woodCap)
+  const { fishLoad, woodLoad } = voyageLoadableCargo({
+    inventory: ctx.inventory,
+    cats: ctx.cats,
+    season: ctx.season,
+    boatLevel: ctx.boat.level,
+  })
   return fishLoad + woodLoad > 0
 }
 
@@ -51,10 +77,12 @@ export function buildDepartVoyage(ctx: VoyageContext): {
   statusMessage: string
 } | null {
   if (!canDepartVoyage(ctx)) return null
-  const fishCap = BOAT_FISH_CAP[ctx.boat.level] ?? 4
-  const woodCap = BOAT_WOOD_CAP[ctx.boat.level] ?? 1
-  const fishLoad = Math.min(ctx.inventory.fish ?? 0, fishCap)
-  const woodLoad = Math.min(ctx.inventory.wood ?? 0, woodCap)
+  const { fishLoad, woodLoad } = voyageLoadableCargo({
+    inventory: ctx.inventory,
+    cats: ctx.cats,
+    season: ctx.season,
+    boatLevel: ctx.boat.level,
+  })
   if (fishLoad + woodLoad <= 0) return null
 
   const sailors = ctx.cats.filter((c) => c.role === 'sailor')

@@ -9,6 +9,10 @@ export const DOCK_BOTTOM = 12
 
 /** 说明按钮：紧挨商店右侧 */
 export const MANUAL_FAB_LEFT = DOCK_LEFT + DOCK_BTN_MIN_W + DOCK_GAP
+/** 日志按钮：紧挨说明右侧 */
+export const LOG_FAB_LEFT = MANUAL_FAB_LEFT + DOCK_BTN_MIN_W + DOCK_GAP
+/** 重开按钮：紧挨日志右侧 */
+export const RESTART_FAB_LEFT = LOG_FAB_LEFT + DOCK_BTN_MIN_W + DOCK_GAP
 
 export const dockBtnBase: CSSProperties = {
   boxSizing: 'border-box',

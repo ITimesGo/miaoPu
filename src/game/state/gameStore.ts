@@ -112,6 +112,12 @@ import {
   type SoftCapBuildings,
 } from '../data/economy'
 import {
+  appendGameLog,
+  appendGameLogs,
+  type GameLogEntry,
+  type GameLogKind,
+} from '../data/gameLog'
+import {
   attachAutoSave,
   clearSavedGame,
   createFreshPersistSlice,
@@ -404,6 +410,41 @@ function catDisplayName(breedId: string): string {
   return getBreed(breedId)?.name ?? '小猫'
 }
 
+function classifyDayNote(text: string): GameLogKind {
+  if (
+    text.includes('离世') ||
+    text.includes('离开') ||
+    text.includes('空无') ||
+    text.includes('全灭')
+  ) {
+    return 'crisis'
+  }
+  if (text.includes('海盗') || text.includes('疫病') || text.includes('流浪')) {
+    return 'major'
+  }
+  return 'daily'
+}
+
+/** 在状态补丁上附带一条大事记 */
+function withGameLog(
+  s: Pick<GameState, 'gameLog' | 'day' | 'minuteOfDay'>,
+  kind: GameLogKind,
+  text: string,
+  patch: Partial<GameState>,
+): Partial<GameState> {
+  const msg = text.trim()
+  if (!msg) return patch
+  return {
+    ...patch,
+    gameLog: appendGameLog(s.gameLog ?? [], {
+      day: s.day,
+      minuteOfDay: Math.floor(s.minuteOfDay),
+      kind,
+      text: msg,
+    }),
+  }
+}
+
 /** 墙钟驱动：超时默认 / 海盗对抗揭晓 */
 function resolveMajorWallClock(get: () => GameState): Partial<GameState> | null {
   const s = get()
@@ -415,26 +456,28 @@ function resolveMajorWallClock(get: () => GameState): Partial<GameState> | null 
     if (ev.kind === 'pirate') return buildTributePatch(s, true)
     if (ev.kind === 'plague') {
       const nowAbs = absoluteGameMinute(s.day, s.minuteOfDay)
-      return {
+      const statusMessage = '【疫病潮】挂机期间已硬扛——请查看弹窗详情'
+      return withGameLog(s, 'major', statusMessage, {
         majorEvent: applyPlagueEndure({
           nowAbs,
           cats: s.cats,
           prev: s.majorEvent,
           auto: true,
         }),
-        statusMessage: '【疫病潮】挂机期间已硬扛——请查看弹窗详情',
-      }
+        statusMessage,
+      })
     }
     if (ev.kind === 'stray') {
       const nowAbs = absoluteGameMinute(s.day, s.minuteOfDay)
-      return {
+      const statusMessage = '【流浪猫】挂机期间已婉拒——请查看弹窗详情'
+      return withGameLog(s, 'major', statusMessage, {
         majorEvent: applyStrayReject({
           nowAbs,
           prev: s.majorEvent,
           auto: true,
         }),
-        statusMessage: '【流浪猫】挂机期间已婉拒——请查看弹窗详情',
-      }
+        statusMessage,
+      })
     }
   }
   if (
@@ -461,7 +504,10 @@ function buildTributePatch(s: GameState, auto: boolean): Partial<GameState> {
   const body = auto
     ? `${tribute.summary}\n\n你不在时海盗登岛收走了贡品。请确认损失后再继续。`
     : tribute.summary
-  return {
+  const statusMessage = auto
+    ? '【海盗】挂机期间已自动献贡——请查看弹窗详情'
+    : `【海盗】${tribute.summary}`
+  return withGameLog(s, 'major', statusMessage, {
     coins: tribute.coins,
     inventory: tribute.inventory,
     majorEvent: {
@@ -472,10 +518,8 @@ function buildTributePatch(s: GameState, auto: boolean): Partial<GameState> {
       resultTitle: title,
       resultBody: body,
     },
-    statusMessage: auto
-      ? '【海盗】挂机期间已自动献贡——请查看弹窗详情'
-      : `【海盗】${tribute.summary}`,
-  }
+    statusMessage,
+  })
 }
 
 function buildFightRevealPatch(s: GameState): Partial<GameState> {
@@ -491,7 +535,8 @@ function buildFightRevealPatch(s: GameState): Partial<GameState> {
   })
   const nowAbs = absoluteGameMinute(s.day, s.minuteOfDay)
   const settled = clearDecisionWindow(s.majorEvent, nowAbs + MAJOR_COOLDOWN_MINUTES)
-  return {
+  const statusMessage = `【海盗】${applied.title}：${applied.body}`
+  return withGameLog(s, 'major', statusMessage, {
     cats: applied.cats,
     inventory: applied.inventory,
     coins: applied.coins,
@@ -505,8 +550,8 @@ function buildFightRevealPatch(s: GameState): Partial<GameState> {
       resultTitle: applied.title,
       resultBody: applied.body,
     },
-    statusMessage: `【海盗】${applied.title}：${applied.body}`,
-  }
+    statusMessage,
+  })
 }
 
 /** 白天有足够药品时立刻治愈，不必等到日结 */
@@ -528,11 +573,12 @@ function buildDaytimeCurePatch(s: GameState): Partial<GameState> | null {
   })
   if (cured === 0) return null
 
-  return {
+  const statusMessage = `用药治愈 ${cured} 只病猫（${cost} 药/只${cost > 1 ? ' · 无医生' : ' · 有医生'}）`
+  return withGameLog(s, 'daily', statusMessage, {
     cats,
     inventory: { ...s.inventory, medicine: med },
-    statusMessage: `用药治愈 ${cured} 只病猫（${cost} 药/只${cost > 1 ? ' · 无医生' : ' · 有医生'}）`,
-  }
+    statusMessage,
+  })
 }
 
 interface GameState {
@@ -579,6 +625,8 @@ interface GameState {
   goalHistory: string[]
   /** 工具保养不足：户外工产量降低 */
   toolsWorn: boolean
+  /** 大事记 */
+  gameLog: GameLogEntry[]
   /** 猫头闲聊气泡（最多 2） */
   speechBubbles: SpeechBubble[]
   lastIslandSpeechAt: number
@@ -725,6 +773,8 @@ export interface DevPatch {
   clearPlague?: boolean
   /** 工具钝了（户外产量降低） */
   toolsWorn?: boolean
+  /** 清空大事记 */
+  clearGameLog?: boolean
 }
 
 const savedSlice = loadSavedGame()
@@ -1130,6 +1180,12 @@ export const useGameStore = create<GameState>((set, get) => ({
           next.timeScale = 0
           next.statusMessage = '【开发者】全灭 · 可重新开始'
         }
+        next.gameLog = appendGameLog(next.gameLog ?? s.gameLog ?? [], {
+          day: next.day ?? s.day,
+          minuteOfDay: Math.floor(next.minuteOfDay ?? s.minuteOfDay),
+          kind: 'crisis',
+          text: next.statusMessage,
+        })
       }
     }
 
@@ -1159,6 +1215,11 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (patch.clearSave) {
       clearSavedGame()
       next.statusMessage = '【开发者】已清除浏览器存档（当前局仍继续）'
+    }
+
+    if (patch.clearGameLog) {
+      next.gameLog = []
+      next.statusMessage = '【开发者】大事记已清空'
     }
 
     if (patch.forceComfortBoost) {
@@ -1258,6 +1319,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         const settled = settleVoyageReturn({
           nowAbs,
           minuteOfDay: minute,
+          season: s.season,
           inventory: inv,
           cats,
           harbor,
@@ -1302,6 +1364,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         const departed = buildDepartVoyage({
           nowAbs,
           minuteOfDay: minute,
+          season: next.season ?? s.season,
           inventory: inv,
           cats,
           harbor,
@@ -1392,7 +1455,8 @@ export const useGameStore = create<GameState>((set, get) => ({
         !patch.forcePlagueTide &&
         !patch.forceStrayCats &&
         !patch.clearMajorCooldown &&
-        !patch.clearPlague
+        !patch.clearPlague &&
+        !patch.clearGameLog
       ) {
         next.statusMessage = '【开发者】已应用调试参数'
       }
@@ -1425,6 +1489,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     )
     let nextTrees = advanceTrees(state.trees, gameMinutes, state.season)
     let granary = { ...state.granary }
+    let gameLog = state.gameLog ?? []
+    let gameLogChanged = false
     let inventory = state.inventory
     let coins = state.coins
     let status = state.statusMessage
@@ -1613,7 +1679,16 @@ export const useGameStore = create<GameState>((set, get) => ({
         gameOver = true
         notes.push('喵圃空无一只猫…')
       }
-      if (notes.length > 0) status = notes.join(' · ')
+      if (notes.length > 0) {
+        status = notes.join(' · ')
+        gameLog = appendGameLogs(
+          gameLog,
+          nextDay,
+          nextMinute,
+          notes.map((text) => ({ kind: classifyDayNote(text), text })),
+        )
+        gameLogChanged = true
+      }
     }
 
     if (dayRolled) {
@@ -1662,15 +1737,36 @@ export const useGameStore = create<GameState>((set, get) => ({
         majorEvent = startMajorThreat('pirate', majorEvent)
         majorChanged = true
         status = '【海盗】黑帆逼近码头！快决定献贡或反抗'
+        gameLog = appendGameLog(gameLog, {
+          day: nextDay,
+          minuteOfDay: nextMinute,
+          kind: 'major',
+          text: status,
+        })
+        gameLogChanged = true
       } else if (picked === 'plague') {
         majorEvent = startMajorThreat('plague', majorEvent)
         majorChanged = true
         status = '【疫病潮】岛上蔓延疫病！快决定隔离或硬扛'
+        gameLog = appendGameLog(gameLog, {
+          day: nextDay,
+          minuteOfDay: nextMinute,
+          kind: 'major',
+          text: status,
+        })
+        gameLogChanged = true
       } else if (picked === 'stray') {
         const offer = rollStrayOffer(nextCats.map((c) => c.breedId))
         majorEvent = startMajorThreat('stray', majorEvent, offer)
         majorChanged = true
         status = '【流浪猫】有流浪猫想投奔喵圃'
+        gameLog = appendGameLog(gameLog, {
+          day: nextDay,
+          minuteOfDay: nextMinute,
+          kind: 'major',
+          text: status,
+        })
+        gameLogChanged = true
       }
     }
 
@@ -1743,6 +1839,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       const settled = settleVoyageReturn({
         nowAbs,
         minuteOfDay: nextMinute,
+        season: nextSeason,
         inventory,
         cats: nextCats,
         harbor: state.harbor,
@@ -1758,6 +1855,13 @@ export const useGameStore = create<GameState>((set, get) => ({
         status =
           settled.statusMessage + (coin.discarded > 0 ? ' · 金库已满' : '')
         voyageChanged = true
+        gameLog = appendGameLog(gameLog, {
+          day: nextDay,
+          minuteOfDay: nextMinute,
+          kind: 'voyage',
+          text: status,
+        })
+        gameLogChanged = true
         if (seasonGoal.kind === 'voyages' && !seasonGoal.completed) {
           const hit = bumpGoalProgress(
             seasonGoal,
@@ -1779,7 +1883,16 @@ export const useGameStore = create<GameState>((set, get) => ({
             goalHistoryChanged = true
           }
           goalChanged = true
-          if (hit.note) status = hit.note
+          if (hit.note) {
+            status = hit.note
+            gameLog = appendGameLog(gameLog, {
+              day: nextDay,
+              minuteOfDay: nextMinute,
+              kind: 'system',
+              text: hit.note,
+            })
+            gameLogChanged = true
+          }
         }
       }
     }
@@ -1789,6 +1902,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       const departed = buildDepartVoyage({
         nowAbs,
         minuteOfDay: nextMinute,
+        season: nextSeason,
         inventory,
         cats: nextCats,
         harbor: state.harbor,
@@ -1801,6 +1915,13 @@ export const useGameStore = create<GameState>((set, get) => ({
         inventory = departed.inventory
         status = departed.statusMessage
         voyageChanged = true
+        gameLog = appendGameLog(gameLog, {
+          day: nextDay,
+          minuteOfDay: nextMinute,
+          kind: 'voyage',
+          text: status,
+        })
+        gameLogChanged = true
       }
     }
 
@@ -1823,6 +1944,13 @@ export const useGameStore = create<GameState>((set, get) => ({
         coins = hit.coins
         status = hit.note
         goalChanged = true
+        gameLog = appendGameLog(gameLog, {
+          day: nextDay,
+          minuteOfDay: nextMinute,
+          kind: 'system',
+          text: hit.note,
+        })
+        gameLogChanged = true
       } else if (hit.goal !== seasonGoal) {
         seasonGoal = hit.goal
         goalChanged = true
@@ -1868,7 +1996,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       goalHistoryChanged ||
       coinsChanged ||
       speechChanged ||
-      toolsWornChanged
+      toolsWornChanged ||
+      gameLogChanged
     ) {
       set({
         minuteOfDay: nextMinute,
@@ -1892,6 +2021,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         goalHistory,
         speechBubbles,
         toolsWorn,
+        ...(gameLogChanged ? { gameLog } : {}),
         ...(gameOver ? { gameOver: true, timeScale: 0 } : {}),
       })
     } else {
@@ -1913,6 +2043,11 @@ export const useGameStore = create<GameState>((set, get) => ({
     const ore = inv.ore ?? 0
     const wood = inv.wood ?? 0
     const knowledge = inv.knowledge ?? 0
+
+    const commitTrade = (patch: Partial<GameState> & { statusMessage: string }) => {
+      const cur = get()
+      set(withGameLog(cur, 'trade', patch.statusMessage, patch))
+    }
 
     const pay = (price: number, oreCost = 0, woodCost = 0, knowledgeCost = 0) => {
       if (coins < price) {
@@ -1945,10 +2080,10 @@ export const useGameStore = create<GameState>((set, get) => ({
       case 'buy_seed': {
         if (!pay(SEED_PACK_PRICE)) return false
         inv.wheat_seed = (inv.wheat_seed ?? 0) + SEED_PACK_AMOUNT
-        set({
+        commitTrade({
           coins: coins - SEED_PACK_PRICE,
           inventory: inv,
-          statusMessage: `购入麦种 ×${SEED_PACK_AMOUNT}`,
+          statusMessage: `购入麦种 ×${SEED_PACK_AMOUNT}（-${SEED_PACK_PRICE} 金）`,
         })
         return true
       }
@@ -1960,7 +2095,11 @@ export const useGameStore = create<GameState>((set, get) => ({
         }
         if (!pay(TOY_PRICE)) return false
         inv.toy = (inv.toy ?? 0) + 1
-        set({ coins: coins - TOY_PRICE, inventory: inv, statusMessage: '购入猫咪玩具 ×1' })
+        commitTrade({
+          coins: coins - TOY_PRICE,
+          inventory: inv,
+          statusMessage: `购入猫咪玩具 ×1（-${TOY_PRICE} 金）`,
+        })
         return true
       }
       case 'buy_snack': {
@@ -1971,7 +2110,11 @@ export const useGameStore = create<GameState>((set, get) => ({
         }
         if (!pay(SNACK_PRICE)) return false
         inv.snack = (inv.snack ?? 0) + 1
-        set({ coins: coins - SNACK_PRICE, inventory: inv, statusMessage: '购入猫咪零食 ×1' })
+        commitTrade({
+          coins: coins - SNACK_PRICE,
+          inventory: inv,
+          statusMessage: `购入猫咪零食 ×1（-${SNACK_PRICE} 金）`,
+        })
         return true
       }
       case 'recruit_cat': {
@@ -2006,7 +2149,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           sick: false,
           boostUntil: 0,
         }
-        set({
+        commitTrade({
           coins: coins - price,
           cats: [...cats, newbie],
           statusMessage: `迎来了${breed.title}「${breed.name}」（${ROLE_LABEL[role]}）！花费 ${price} 金`,
@@ -2024,7 +2167,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         if (!pay(0, 0, 0, need)) return false
         const nextCoins = applyPay(0, 0, 0, need)
         const name = getBreed(target.breedId)?.name ?? '小猫'
-        set({
+        commitTrade({
           coins: nextCoins,
           inventory: inv,
           cats: cats.map((c) => (c.id === target.id ? { ...c, roleLevel: nextLv } : c)),
@@ -2041,11 +2184,11 @@ export const useGameStore = create<GameState>((set, get) => ({
         const needKnow = COTTAGE_UPGRADE_KNOWLEDGE[next] ?? 0
         if (price == null || !pay(price, needOre, needWood, needKnow)) return false
         const nextCoins = applyPay(price, needOre, needWood, needKnow)
-        set({
+        commitTrade({
           coins: nextCoins,
           inventory: inv,
           cottage: { level: next },
-          statusMessage: `小屋升到 Lv.${next}，猫口上限 ${catCapForCottage(next)}`,
+          statusMessage: `小屋升到 Lv.${next}，猫口上限 ${catCapForCottage(next)}（-${price} 金）`,
         })
         return true
       }
@@ -2053,11 +2196,11 @@ export const useGameStore = create<GameState>((set, get) => ({
         if (granary.level > 0) return false
         if (!pay(GRANARY_BUY_PRICE, GRANARY_BUY_ORE, GRANARY_BUY_WOOD)) return false
         const nextCoins = applyPay(GRANARY_BUY_PRICE, GRANARY_BUY_ORE, GRANARY_BUY_WOOD)
-        set({
+        commitTrade({
           coins: nextCoins,
           inventory: inv,
           granary: { level: 1, condition: 100 },
-          statusMessage: '建好了 1 级粮仓！记得定期修缮',
+          statusMessage: `建好了 1 级粮仓（-${GRANARY_BUY_PRICE} 金）`,
         })
         return true
       }
@@ -2070,11 +2213,11 @@ export const useGameStore = create<GameState>((set, get) => ({
         const needKnow = GRANARY_UPGRADE_KNOWLEDGE[next] ?? 0
         if (price == null || !pay(price, needOre, needWood, needKnow)) return false
         const nextCoins = applyPay(price, needOre, needWood, needKnow)
-        set({
+        commitTrade({
           coins: nextCoins,
           inventory: inv,
           granary: { ...granary, level: next, condition: Math.min(100, granary.condition + 10) },
-          statusMessage: `粮仓升到 Lv.${next}（-${needOre} 矿 · -${needWood} 木 · -${needKnow} 知识）`,
+          statusMessage: `粮仓升到 Lv.${next}（-${price} 金 · -${needOre} 矿 · -${needWood} 木 · -${needKnow} 知识）`,
         })
         return true
       }
@@ -2090,10 +2233,10 @@ export const useGameStore = create<GameState>((set, get) => ({
         }
         if (!pay(GRANARY_REPAIR_COST)) return false
         const cond = Math.min(100, before + GRANARY_REPAIR_AMOUNT)
-        set({
+        commitTrade({
           coins: coins - GRANARY_REPAIR_COST,
           granary: { ...granary, condition: cond },
-          statusMessage: `粮仓修缮完成，完好度 ${before}→${cond}`,
+          statusMessage: `粮仓修缮完成，完好度 ${before}→${cond}（-${GRANARY_REPAIR_COST} 金）`,
         })
         return true
       }
@@ -2106,11 +2249,11 @@ export const useGameStore = create<GameState>((set, get) => ({
         const needKnow = HARBOR_UPGRADE_KNOWLEDGE[next] ?? 0
         if (price == null || !pay(price, needOre, needWood, needKnow)) return false
         const nextCoins = applyPay(price, needOre, needWood, needKnow)
-        set({
+        commitTrade({
           coins: nextCoins,
           inventory: inv,
           harbor: { level: next },
-          statusMessage: `港口升到 Lv.${next}（-${needOre} 矿 · -${needWood} 木 · -${needKnow} 知识）`,
+          statusMessage: `港口升到 Lv.${next}（-${price} 金 · -${needOre} 矿 · -${needWood} 木 · -${needKnow} 知识）`,
         })
         return true
       }
@@ -2123,11 +2266,11 @@ export const useGameStore = create<GameState>((set, get) => ({
         const needKnow = BOAT_UPGRADE_KNOWLEDGE[next] ?? 0
         if (price == null || !pay(price, needOre, needWood, needKnow)) return false
         const nextCoins = applyPay(price, needOre, needWood, needKnow)
-        set({
+        commitTrade({
           coins: nextCoins,
           inventory: inv,
           boat: { level: next },
-          statusMessage: `货船升到 Lv.${next}（-${needOre} 矿 · -${needWood} 木 · -${needKnow} 知识）`,
+          statusMessage: `货船升到 Lv.${next}（-${price} 金 · -${needOre} 矿 · -${needWood} 木 · -${needKnow} 知识）`,
         })
         return true
       }
@@ -2152,11 +2295,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     inv[resource] = (inv[resource] ?? 0) - preview.qty
     const coin = applyCoinGain(coins, preview.earn, coinSoftCap(softCapBuildings(get())))
     const vaultNote = coin.discarded > 0 ? ' · 金库已满' : ''
-    set({
-      inventory: inv,
-      coins: coin.coins,
-      statusMessage: `回收${SELL_LABEL[resource]} ×${preview.qty}（+${coin.added} 金 · 单价 ${preview.unit}${vaultNote}）`,
-    })
+    const statusMessage = `回收${SELL_LABEL[resource]} ×${preview.qty}（+${coin.added} 金 · 单价 ${preview.unit}${vaultNote}）`
+    set(
+      withGameLog(get(), 'trade', statusMessage, {
+        inventory: inv,
+        coins: coin.coins,
+        statusMessage,
+      }),
+    )
     return true
   },
 
@@ -2698,15 +2844,18 @@ export const useGameStore = create<GameState>((set, get) => ({
       return false
     }
     const outcome = rollFightOutcome({ cats: s.cats, cottage: s.cottage })
-    set({
-      majorEvent: {
-        ...s.majorEvent,
-        phase: 'fighting',
-        fightEndsAt: Date.now() + PIRATE_FIGHT_MS,
-        pendingOutcome: outcome,
-      },
-      statusMessage: '【海盗】猫群开始反抗…',
-    })
+    const statusMessage = '【海盗】猫群开始反抗…'
+    set(
+      withGameLog(s, 'major', statusMessage, {
+        majorEvent: {
+          ...s.majorEvent,
+          phase: 'fighting',
+          fightEndsAt: Date.now() + PIRATE_FIGHT_MS,
+          pendingOutcome: outcome,
+        },
+        statusMessage,
+      }),
+    )
     return true
   },
 
@@ -2766,12 +2915,21 @@ export const useGameStore = create<GameState>((set, get) => ({
       majorEvent: applied.majorEvent,
     }
     const cured = buildDaytimeCurePatch(mid as GameState)
-    set({
+    const statusMessage = `【疫病潮】${applied.majorEvent.resultBody}`
+    const base = {
+      ...s,
       inventory: cured?.inventory ?? applied.inventory,
       cats: cured?.cats ?? s.cats,
-      majorEvent: applied.majorEvent,
-      statusMessage: `【疫病潮】${applied.majorEvent.resultBody}`,
-    })
+      gameLog: cured?.gameLog ?? s.gameLog,
+    }
+    set(
+      withGameLog(base, 'major', statusMessage, {
+        inventory: base.inventory,
+        cats: base.cats,
+        majorEvent: applied.majorEvent,
+        statusMessage,
+      }),
+    )
     return true
   },
 
@@ -2787,10 +2945,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       prev: s.majorEvent,
       auto: false,
     })
-    set({
-      majorEvent: next,
-      statusMessage: `【疫病潮】${next.resultBody}`,
-    })
+    const statusMessage = `【疫病潮】${next.resultBody}`
+    set(withGameLog(s, 'major', statusMessage, { majorEvent: next, statusMessage }))
     return true
   },
 
@@ -2832,22 +2988,25 @@ export const useGameStore = create<GameState>((set, get) => ({
       boostUntil: 0,
     }
     const body = `${breed.title}「${breed.name}」加入喵圃，现为散民。花费鱼肉 ×${s.majorEvent.strayCostFish}、金币 ×${s.majorEvent.strayCostCoins}。`
-    set({
-      coins: s.coins - s.majorEvent.strayCostCoins,
-      inventory: {
-        ...s.inventory,
-        fish: (s.inventory.fish ?? 0) - s.majorEvent.strayCostFish,
-      },
-      cats: [...s.cats, newbie],
-      majorEvent: {
-        ...settled,
-        phase: 'result',
-        needsAck: true,
-        resultTitle: '收留流浪猫',
-        resultBody: body,
-      },
-      statusMessage: `【流浪猫】${body}`,
-    })
+    const statusMessage = `【流浪猫】${body}`
+    set(
+      withGameLog(s, 'major', statusMessage, {
+        coins: s.coins - s.majorEvent.strayCostCoins,
+        inventory: {
+          ...s.inventory,
+          fish: (s.inventory.fish ?? 0) - s.majorEvent.strayCostFish,
+        },
+        cats: [...s.cats, newbie],
+        majorEvent: {
+          ...settled,
+          phase: 'result',
+          needsAck: true,
+          resultTitle: '收留流浪猫',
+          resultBody: body,
+        },
+        statusMessage,
+      }),
+    )
     return true
   },
 
@@ -2858,10 +3017,13 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     const nowAbs = absoluteGameMinute(s.day, s.minuteOfDay)
     const next = applyStrayReject({ nowAbs, prev: s.majorEvent, auto: false })
-    set({
-      majorEvent: next,
-      statusMessage: '【流浪猫】它们去了别的岛',
-    })
+    const statusMessage = '【流浪猫】它们去了别的岛'
+    set(
+      withGameLog(s, 'major', statusMessage, {
+        majorEvent: next,
+        statusMessage,
+      }),
+    )
     return true
   },
 }))

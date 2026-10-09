@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from 'react'
+import { useState, type CSSProperties, type ReactNode } from 'react'
 import { getBreed } from '../game/data/breeds'
 import { CAT_BEHAVIOR_LABEL } from '../game/systems/catFarmAI'
 import { granaryCapacity } from '../game/data/shop'
@@ -50,13 +50,14 @@ const panel: CSSProperties = {
   position: 'absolute',
   top: 12,
   left: 12,
-  width: 300,
-  padding: '10px 11px 9px',
-  background: 'linear-gradient(160deg, rgba(22, 36, 28, 0.86), rgba(12, 22, 18, 0.82))',
+  width: 312,
+  padding: '9px 10px 8px',
+  background: 'linear-gradient(160deg, rgba(22, 36, 28, 0.88), rgba(12, 22, 18, 0.84))',
   borderRadius: 12,
   border: '1px solid rgba(140, 170, 140, 0.28)',
   boxShadow: '0 6px 20px rgba(0,0,0,0.3)',
   color: '#f5f0e6',
+  pointerEvents: 'auto',
 }
 
 const row: CSSProperties = {
@@ -124,6 +125,7 @@ function TinyTag({ children, warn }: { children: ReactNode; warn?: boolean }) {
 }
 
 export function Hud() {
+  const [catsOpen, setCatsOpen] = useState(false)
   const day = useGameStore((s) => s.day)
   const season = useGameStore((s) => s.season)
   const weather = useGameStore((s) => s.weather)
@@ -166,10 +168,7 @@ export function Hud() {
   const fishCap = softCapFor('fish', buildings)!
   const knowCap = softCapFor('knowledge', buildings)!
   const medCap = softCapFor('medicine', buildings)!
-  const toyCap = softCapFor('toy', buildings)!
-  const snackCap = softCapFor('snack', buildings)!
   const leadLabel = CAT_BEHAVIOR_LABEL[leadBehavior] ?? leadBehavior
-  const yieldPct = Math.round((1 + Math.max(0, catCount - 1) * 0.5) * 100)
   const fish = inventory.fish ?? 0
   const fishNeed = dailyFishNeed(cats)
   const fishShort = fish < fishNeed
@@ -196,10 +195,6 @@ export function Hud() {
       : 0
   const voyageEtaMin =
     boatVoyage.phase === 'away' ? Math.max(0, Math.ceil((boatVoyage.returnAt - nowAbs) / 60)) : 0
-  const voyageCooldownMin =
-    boatVoyage.phase === 'docked' && boatVoyage.readyAt > nowAbs
-      ? Math.max(0, Math.ceil((boatVoyage.readyAt - nowAbs) / 60))
-      : 0
   const goalProg = liveGoalProgress(seasonGoal, {
     fish,
     wheat,
@@ -212,6 +207,7 @@ export function Hud() {
     boatLevel: boat.level,
     catCount,
   })
+  const speedScales = import.meta.env.DEV ? [1, 2, 4, 8] : [1, 2]
 
   return (
     <div
@@ -267,14 +263,86 @@ export function Hud() {
       `}</style>
 
       <div style={panel}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-          <div style={{ fontSize: 15, fontWeight: 800, letterSpacing: '0.08em' }}>喵圃</div>
-          <div style={{ fontSize: 11, opacity: 0.82, textAlign: 'right' }}>
-            第{day}天 · {SEASON_LABEL[season]} · {weatherLabel(weather)}
-            {hasRainbow ? ' · 彩虹' : ''}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ fontSize: 14, fontWeight: 800, letterSpacing: '0.06em', flexShrink: 0 }}>
+            喵圃
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'baseline',
+                justifyContent: 'space-between',
+                gap: 6,
+              }}
+            >
+              <span style={{ fontSize: 11, opacity: 0.85 }}>
+                第{day}天 · {SEASON_LABEL[season]} · {weatherLabel(weather)}
+                {hasRainbow ? ' · 彩虹' : ''}
+              </span>
+              <span
+                style={{
+                  fontSize: 15,
+                  fontWeight: 800,
+                  fontVariantNumeric: 'tabular-nums',
+                  fontFamily: 'ui-monospace, Cascadia Mono, Consolas, monospace',
+                  letterSpacing: '0.02em',
+                }}
+              >
+                {formatClock(minuteOfDay)}
+                <span style={{ fontSize: 10, fontWeight: 600, opacity: 0.7, marginLeft: 4 }}>
+                  {periodLabel(minuteOfDay)}
+                </span>
+              </span>
+            </div>
+            <div
+              style={{
+                marginTop: 4,
+                height: 3,
+                borderRadius: 999,
+                background: 'rgba(255,255,255,0.12)',
+                overflow: 'hidden',
+              }}
+            >
+              <div
+                style={{
+                  width: `${progress * 100}%`,
+                  height: '100%',
+                  borderRadius: 999,
+                  background: night
+                    ? 'linear-gradient(90deg, #4a6ab0, #a8c0ff)'
+                    : 'linear-gradient(90deg, #f0c060, #ffe8a0)',
+                  transition: 'width 0.2s linear',
+                }}
+              />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
+            {speedScales.map((scale) => (
+              <button
+                key={scale}
+                type="button"
+                onClick={() => setTimeScale(scale)}
+                title={`流速 ×${scale}`}
+                style={{
+                  width: 28,
+                  height: 26,
+                  padding: 0,
+                  borderRadius: 6,
+                  border: timeScale === scale ? '2px solid #f0d78c' : '1px solid #4a6354',
+                  background: timeScale === scale ? '#3d5c48' : 'rgba(12, 22, 18, 0.75)',
+                  color: '#f5f0e6',
+                  cursor: 'pointer',
+                  fontSize: 10,
+                  fontWeight: timeScale === scale ? 800 : 500,
+                }}
+              >
+                ×{scale}
+              </button>
+            ))}
           </div>
         </div>
-        <div style={{ marginTop: 2, fontSize: 11, opacity: 0.7 }}>
+        <div style={{ marginTop: 3, fontSize: 10, opacity: 0.65 }}>
           {season === 'winter' ? '休耕中' : '可种麦'} · {leadLabel}
         </div>
 
@@ -312,47 +380,34 @@ export function Hud() {
             warn={medShort || med >= medCap}
             tone="#e8a0c8"
           />
-        </div>
-
-        <div style={row}>
           <Pill label="小麦" value={`${wheat}/${cap}`} warn={wheat >= cap} />
           <Pill label="麦种" value={seeds} warn={seedShort} />
           <Pill
-            label="玩具"
-            value={`${inventory.toy ?? 0}/${toyCap}`}
-            warn={(inventory.toy ?? 0) >= toyCap}
-          />
-          <Pill
-            label="零食"
-            value={`${inventory.snack ?? 0}/${snackCap}`}
-            warn={(inventory.snack ?? 0) >= snackCap}
-          />
-          <Pill
             label="猫群"
-            value={`${catCount}/${catCap}`}
+            value={`${catCount}/${catCap}${sickCount > 0 ? ` ·病${sickCount}` : ''}`}
             warn={sickCount > 0 || catCount >= catCap}
           />
-          <Pill label="产量" value={`${yieldPct}%`} />
         </div>
         {fishShort && (
-          <div style={{ marginTop: 4, fontSize: 10, color: '#ffb090', fontWeight: 600 }}>
-            鱼肉偏低：库存 {fish}，明日约需 {fishNeed}
+          <div style={{ marginTop: 3, fontSize: 10, color: '#ffb090', fontWeight: 600 }}>
+            鱼偏低 {fish}/{fishNeed}
           </div>
         )}
         {woodShort && (
-          <div style={{ marginTop: 4, fontSize: 10, color: '#ffb090', fontWeight: 600 }}>
-            木材偏低：库存 {wood}，{season === 'winter' ? '冬日全天' : '夜间'}取暖约需 {woodNeed}
+          <div style={{ marginTop: 3, fontSize: 10, color: '#ffb090', fontWeight: 600 }}>
+            木偏低 {wood}/{woodNeed}
+            {season === 'winter' ? '（冬）' : ''}
           </div>
         )}
         {(oreShort || toolsWorn) && (
-          <div style={{ marginTop: 4, fontSize: 10, color: '#ffb090', fontWeight: 600 }}>
+          <div style={{ marginTop: 3, fontSize: 10, color: '#ffb090', fontWeight: 600 }}>
             {toolsWorn
-              ? '工具偏钝：矿工/伐木/渔夫产量降低，日结备足矿石可修好'
-              : `矿石偏低：库存 ${ore}，工具保养约需 ${oreNeed}（户外工 ${countToolWorkers(cats)}）`}
+              ? '工具偏钝 · 日结备矿可修好'
+              : `矿偏低 ${ore}/${oreNeed}（户外工 ${countToolWorkers(cats)}）`}
           </div>
         )}
 
-        <div style={{ ...row, marginTop: 7, gap: 4 }}>
+        <div style={{ ...row, marginTop: 6, gap: 4, alignItems: 'center' }}>
           <TinyTag>屋 {cottage.level}</TinyTag>
           <TinyTag>
             仓 {granary.level}
@@ -360,70 +415,88 @@ export function Hud() {
           </TinyTag>
           <TinyTag>港 {harbor.level}</TinyTag>
           <TinyTag>船 {boat.level}</TinyTag>
-          {cats.map((c) => {
-            const b = getBreed(c.breedId)
-            const tag = ROLE_SHORT[c.role ?? 'farmer']
-            const lv = clampRoleLevel(c.roleLevel)
-            return (
-              <TinyTag key={c.id} warn={c.sick}>
-                {b?.name ?? c.breedId}
-                <span style={{ opacity: 0.75, margin: '0 3px' }}>·</span>
-                {tag}
-                <span style={{ color: '#f0d78c', fontWeight: 800, marginLeft: 2 }}>Lv.{lv}</span>
-                {c.sick ? ' · 病' : ''}
-              </TinyTag>
-            )
-          })}
+          <button
+            type="button"
+            onClick={() => setCatsOpen((v) => !v)}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 3,
+              padding: '2px 8px',
+              borderRadius: 999,
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: 'pointer',
+              background: sickCount > 0 ? 'rgba(140, 42, 32, 0.5)' : 'rgba(255,255,255,0.07)',
+              border:
+                sickCount > 0
+                  ? '1px solid rgba(255,130,100,0.4)'
+                  : '1px solid rgba(255,255,255,0.12)',
+              color: sickCount > 0 ? '#ffc2b4' : '#f5f0e6',
+            }}
+            title={catsOpen ? '收起猫群名单' : '展开猫群名单'}
+          >
+            猫群 {catsOpen ? '▴' : '▾'}
+            {sickCount > 0 ? ` ·病${sickCount}` : ''}
+          </button>
         </div>
+        {catsOpen && (
+          <div style={{ ...row, marginTop: 4, gap: 4 }}>
+            {cats.map((c) => {
+              const b = getBreed(c.breedId)
+              const tag = ROLE_SHORT[c.role ?? 'farmer']
+              const lv = clampRoleLevel(c.roleLevel)
+              return (
+                <TinyTag key={c.id} warn={c.sick}>
+                  {b?.name ?? c.breedId}
+                  <span style={{ opacity: 0.75, margin: '0 3px' }}>·</span>
+                  {tag}
+                  <span style={{ color: '#f0d78c', fontWeight: 800, marginLeft: 2 }}>Lv.{lv}</span>
+                  {c.sick ? ' · 病' : ''}
+                </TinyTag>
+              )
+            })}
+          </div>
+        )}
 
         <div
           style={{
-            marginTop: 7,
+            marginTop: 6,
             fontSize: 11,
-            lineHeight: 1.45,
-            padding: '5px 8px',
+            lineHeight: 1.4,
+            padding: '5px 7px',
             borderRadius: 8,
             background: 'rgba(255,255,255,0.05)',
             border: '1px solid rgba(255,255,255,0.07)',
           }}
         >
-          <div>
-            {boatVoyage.phase === 'away' ? (
-              <span style={{ color: '#a8d4ff' }}>
-                货船出海中 · 约 {voyageEtaMin} 时后回港
-                {boatVoyage.expectedCoins > 0 ? ` · 预计 +${boatVoyage.expectedCoins}金` : ''}
+          {boatVoyage.phase === 'away' && (
+            <div style={{ marginBottom: 2, color: '#a8d4ff' }}>
+              出海中 · {voyageEtaMin} 时后回港
+              {boatVoyage.expectedCoins > 0 ? ` · +${boatVoyage.expectedCoins}金` : ''}
+            </div>
+          )}
+          {seasonGoal.completed ? (
+            <span style={{ color: '#f0d78c' }}>
+              目标完成 · {goalTitle(seasonGoal)}
+              <span style={{ opacity: 0.8, fontWeight: 500 }}>
+                {' '}
+                （{goalRewardText(seasonGoal)}）
               </span>
-            ) : voyageCooldownMin > 0 ? (
-              <span style={{ opacity: 0.8 }}>货船停泊 · {voyageCooldownMin} 时后可再出航</span>
-            ) : (
-              <span style={{ opacity: 0.8 }}>货船停泊 · 船商备货后可出航</span>
-            )}
-          </div>
-          <div style={{ marginTop: 3 }}>
-            {seasonGoal.completed ? (
-              <span style={{ color: '#f0d78c' }}>
-                目标已完成 · {goalTitle(seasonGoal)}
-                <span style={{ opacity: 0.85, fontWeight: 500 }}>
-                  {' '}
-                  （已领 {goalRewardText(seasonGoal)}）
-                </span>
+            </span>
+          ) : (
+            <span>
+              目标 · {goalTitle(seasonGoal)}{' '}
+              <span style={{ color: '#f0d78c', fontWeight: 700 }}>
+                {goalProg}/{seasonGoal.target}
               </span>
-            ) : (
-              <>
-                <div>
-                  季节目标 · {goalTitle(seasonGoal)}{' '}
-                  <span style={{ color: '#f0d78c', fontWeight: 700 }}>
-                    {goalProg}/{seasonGoal.target}
-                  </span>
-                </div>
-                <div style={{ marginTop: 2, opacity: 0.85, fontSize: 10.5 }}>
-                  奖励 {goalRewardText(seasonGoal)}
-                </div>
-              </>
-            )}
-          </div>
+              <span style={{ opacity: 0.75, fontSize: 10, marginLeft: 4 }}>
+                {goalRewardText(seasonGoal)}
+              </span>
+            </span>
+          )}
           {plagueDaysLeft > 0 && (
-            <div style={{ marginTop: 3, color: '#e8a090', fontWeight: 600 }}>
+            <div style={{ marginTop: 2, color: '#e8a090', fontWeight: 600 }}>
               疫病潮 · 约剩 {plagueDaysLeft} 日
               {majorEvent.plagueSickMult < 1
                 ? '（风险降低）'
@@ -436,91 +509,17 @@ export function Hud() {
 
         <div
           style={{
-            marginTop: 8,
-            paddingTop: 7,
+            marginTop: 6,
+            paddingTop: 6,
             borderTop: '1px solid rgba(255,255,255,0.09)',
-            fontSize: 11.5,
-            lineHeight: 1.4,
+            fontSize: 11,
+            lineHeight: 1.35,
             opacity: 0.92,
             color: eventActive ? '#ff6a6a' : undefined,
             fontWeight: eventActive ? 700 : undefined,
           }}
         >
           {eventActive ? alertText : statusMessage}
-        </div>
-      </div>
-
-      <div
-        style={{
-          position: 'absolute',
-          top: 12,
-          right: 12,
-          minWidth: 172,
-          padding: '10px 14px',
-          background: night ? 'rgba(12, 18, 36, 0.88)' : 'rgba(20, 35, 28, 0.78)',
-          borderRadius: 12,
-          border: night ? '1px solid #3a5080' : '1px solid #4a6354',
-          lineHeight: 1.4,
-          pointerEvents: 'auto',
-        }}
-      >
-        <div style={{ fontSize: 11, opacity: 0.75, marginBottom: 2 }}>当前时间</div>
-        <div
-          style={{
-            fontSize: 26,
-            fontWeight: 700,
-            fontVariantNumeric: 'tabular-nums',
-            letterSpacing: '0.04em',
-            fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace',
-          }}
-        >
-          {formatClock(minuteOfDay)}
-        </div>
-        <div style={{ fontSize: 12, marginTop: 2 }}>{periodLabel(minuteOfDay)}</div>
-        <div style={{ fontSize: 10, opacity: 0.6, marginTop: 2 }}>一倍速：24 时 ≈ 6 分</div>
-        <div
-          style={{
-            marginTop: 8,
-            height: 5,
-            borderRadius: 999,
-            background: 'rgba(255,255,255,0.12)',
-            overflow: 'hidden',
-          }}
-        >
-          <div
-            style={{
-              width: `${progress * 100}%`,
-              height: '100%',
-              borderRadius: 999,
-              background: night
-                ? 'linear-gradient(90deg, #4a6ab0, #a8c0ff)'
-                : 'linear-gradient(90deg, #f0c060, #ffe8a0)',
-              transition: 'width 0.2s linear',
-            }}
-          />
-        </div>
-        <div style={{ fontSize: 11, opacity: 0.75, marginTop: 10, marginBottom: 5 }}>流速</div>
-        <div style={{ display: 'flex', gap: 5 }}>
-          {(import.meta.env.DEV ? [1, 2, 4, 8] : [1, 2]).map((scale) => (
-            <button
-              key={scale}
-              type="button"
-              onClick={() => setTimeScale(scale)}
-              style={{
-                flex: 1,
-                padding: '5px 0',
-                borderRadius: 6,
-                border: timeScale === scale ? '2px solid #f0d78c' : '1px solid #4a6354',
-                background: timeScale === scale ? '#3d5c48' : 'rgba(12, 22, 18, 0.75)',
-                color: '#f5f0e6',
-                cursor: 'pointer',
-                fontSize: 11,
-                fontWeight: timeScale === scale ? 700 : 500,
-              }}
-            >
-              ×{scale}
-            </button>
-          ))}
         </div>
       </div>
 

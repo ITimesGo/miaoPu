@@ -31,6 +31,7 @@ import {
   KNOWLEDGE_PER_MEDICINE,
 } from '../types'
 import { softCapFor, type SoftCapBuildings } from '../data/economy'
+import { survivalLeisureChance } from '../data/workPressure'
 
 export type CatTask =
   | { kind: 'sleep'; worldX: number; worldZ: number; behavior: CatBehavior }
@@ -226,6 +227,7 @@ function specialistIdle(input: {
   catIndex: number
   stock: number
   softCap: number
+  reserveNeed: number
   minesToday: number
   workKind: 'mine'
   workPos: { x: number; z: number }
@@ -238,6 +240,7 @@ function specialistIdle(input: {
     catIndex,
     stock,
     softCap,
+    reserveNeed,
     minesToday,
     workKind,
     workPos,
@@ -257,8 +260,8 @@ function specialistIdle(input: {
     return { kind: 'sleep', worldX: bed.x, worldZ: bed.z, behavior: 'sleep' }
   }
 
-  // 到顶提高休闲权重，但仍保留小概率继续干（溢出兑金）
-  const leisureChance = stock >= softCap ? 0.78 : stock >= softCap * 0.5 ? 0.42 : 0.22
+  // 储备不足少摸鱼；到顶仍多闲逛（溢出兑金）
+  const leisureChance = survivalLeisureChance(stock, softCap, reserveNeed)
   if (Math.random() < leisureChance) {
     return pickSoftIdle({ inventory, campX, campZ })
   }
@@ -277,8 +280,19 @@ function lumberjackIdle(input: {
   catId: string
   catIndex: number
   chopsToday: number
+  buildings: SoftCapBuildings
+  reserveNeed: number
 }): CatTask {
-  const { minuteOfDay, inventory, trees, catId, catIndex, chopsToday } = input
+  const {
+    minuteOfDay,
+    inventory,
+    trees,
+    catId,
+    catIndex,
+    chopsToday,
+    buildings,
+    reserveNeed,
+  } = input
   const hour = minuteOfDay / 60
   const isNight = hour < 6 || hour >= 20
   const campX = FOREST_POS.x + 1.2 + (catIndex % 2) * 0.5
@@ -290,8 +304,10 @@ function lumberjackIdle(input: {
     return { kind: 'sleep', worldX: bed.x, worldZ: bed.z, behavior: 'sleep' }
   }
 
-  // 伐木工本职：把每日次数摊在白天；到点也可能先闲逛再砍
-  if (canChopAtMinute(minuteOfDay, chopsToday) && Math.random() >= 0.18) {
+  const wood = inventory.wood ?? 0
+  const woodCap = softCapFor('wood', buildings)!
+  const leisureChance = survivalLeisureChance(wood, woodCap, reserveNeed)
+  if (canChopAtMinute(minuteOfDay, chopsToday) && Math.random() >= leisureChance) {
     const idx = findMatureTree(trees, catId)
     if (idx != null) {
       claimTree(catId, idx)
@@ -316,8 +332,10 @@ function fisherIdle(input: {
   catIndex: number
   castsToday: number
   buildings: SoftCapBuildings
+  reserveNeed: number
 }): CatTask {
-  const { minuteOfDay, inventory, catId, catIndex, castsToday, buildings } = input
+  const { minuteOfDay, inventory, catId, catIndex, castsToday, buildings, reserveNeed } =
+    input
   const hour = minuteOfDay / 60
   const isNight = hour < 6 || hour >= 20
   const stand = fishStand(catIndex)
@@ -333,7 +351,7 @@ function fisherIdle(input: {
 
   const fish = inventory.fish ?? 0
   const fishCap = softCapFor('fish', buildings)!
-  const leisureChance = fish >= fishCap ? 0.78 : fish >= fishCap * 0.5 ? 0.35 : 0.2
+  const leisureChance = survivalLeisureChance(fish, fishCap, reserveNeed)
   if (canFishAtMinute(minuteOfDay, castsToday) && Math.random() >= leisureChance) {
     return {
       kind: 'fish',
@@ -515,6 +533,12 @@ export function pickCatTask(input: {
   studiesToday: number
   craftsToday: number
   buildings: SoftCapBuildings
+  /** 约 2 日矿保养储备线 */
+  oreReserveNeed: number
+  /** 约 2 日取暖木储备线 */
+  woodReserveNeed: number
+  /** 约 2 日口粮储备线 */
+  fishReserveNeed: number
   merchantHere?: boolean
 }): CatTask {
   const {
@@ -535,6 +559,9 @@ export function pickCatTask(input: {
     studiesToday,
     craftsToday,
     buildings,
+    oreReserveNeed,
+    woodReserveNeed,
+    fishReserveNeed,
     merchantHere = false,
   } = input
   const ore = inventory.ore ?? 0
@@ -549,6 +576,7 @@ export function pickCatTask(input: {
       catIndex,
       stock: ore,
       softCap: softCapFor('ore', buildings)!,
+      reserveNeed: oreReserveNeed,
       minesToday,
       workKind: 'mine',
       workPos: MINE_POS,
@@ -557,11 +585,28 @@ export function pickCatTask(input: {
   }
 
   if (role === 'lumberjack') {
-    return lumberjackIdle({ minuteOfDay, inventory, trees, catId, catIndex, chopsToday })
+    return lumberjackIdle({
+      minuteOfDay,
+      inventory,
+      trees,
+      catId,
+      catIndex,
+      chopsToday,
+      buildings,
+      reserveNeed: woodReserveNeed,
+    })
   }
 
   if (role === 'fisher') {
-    return fisherIdle({ minuteOfDay, inventory, catId, catIndex, castsToday, buildings })
+    return fisherIdle({
+      minuteOfDay,
+      inventory,
+      catId,
+      catIndex,
+      castsToday,
+      buildings,
+      reserveNeed: fishReserveNeed,
+    })
   }
 
   if (role === 'scholar') {
