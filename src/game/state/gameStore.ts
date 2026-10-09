@@ -878,7 +878,19 @@ export const useGameStore = create<GameState>((set, get) => ({
       if (!patch.rerollGoal && !patch.completeGoal) {
         const hist = pushGoalHistory(s.goalHistory, s.seasonGoal)
         next.goalHistory = hist
-        next.seasonGoal = rollSeasonGoal(patch.season, next.day ?? s.day, hist)
+        next.seasonGoal = rollSeasonGoal(
+          patch.season,
+          next.day ?? s.day,
+          hist,
+          goalSnapshot(
+            next.inventory ?? s.inventory,
+            next.cottage ?? s.cottage,
+            next.harbor ?? s.harbor,
+            next.boat ?? s.boat,
+            next.cats ?? s.cats,
+            next.coins ?? s.coins,
+          ),
+        )
       }
     }
     if (patch.day != null) {
@@ -1390,7 +1402,19 @@ export const useGameStore = create<GameState>((set, get) => ({
         const season = next.season ?? seasonForDay(day)
         const hist = pushGoalHistory(next.goalHistory ?? s.goalHistory, next.seasonGoal ?? s.seasonGoal)
         next.goalHistory = hist
-        next.seasonGoal = rollSeasonGoal(season, day, hist)
+        next.seasonGoal = rollSeasonGoal(
+          season,
+          day,
+          hist,
+          goalSnapshot(
+            next.inventory ?? s.inventory,
+            next.cottage ?? s.cottage,
+            next.harbor ?? s.harbor,
+            next.boat ?? s.boat,
+            next.cats ?? s.cats,
+            next.coins ?? s.coins,
+          ),
+        )
         next.statusMessage = `【开发者】新目标：${goalTitle(next.seasonGoal)}（奖励 ${goalRewardText(next.seasonGoal)}）`
       }
       if (patch.completeGoal) {
@@ -1540,7 +1564,12 @@ export const useGameStore = create<GameState>((set, get) => ({
           weatherChanged = true
         }
         goalHistory = pushGoalHistory(goalHistory, seasonGoal)
-        seasonGoal = rollSeasonGoal(rollSeason, nextDay, goalHistory)
+        seasonGoal = rollSeasonGoal(
+          rollSeason,
+          nextDay,
+          goalHistory,
+          goalSnapshot(inventory, state.cottage, state.harbor, state.boat, nextCats, coins),
+        )
         goalChanged = true
         goalHistoryChanged = true
         newGoalNote = `新季节目标：${goalTitle(seasonGoal)}（奖励 ${goalRewardText(seasonGoal)}）`

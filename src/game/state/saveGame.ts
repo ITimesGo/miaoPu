@@ -10,7 +10,9 @@ import type { PirateFightOutcome } from '../data/pirates'
 import {
   GOAL_HISTORY_LIMIT,
   type GoalKind,
+  type GoalSnap,
   type SeasonGoal,
+  isGoalMet,
   rollSeasonGoal,
 } from '../data/goals'
 import {
@@ -125,7 +127,58 @@ function emptyPlots(): PlotState[][] {
   )
 }
 
+/** 新开局抽目标用：与 createFreshPersistSlice 初始库存一致 */
+export function startingGoalSnap(): GoalSnap {
+  return {
+    fish: 4,
+    wheat: 0,
+    ore: STARTING_ORE,
+    wood: STARTING_WOOD,
+    knowledge: 0,
+    coins: 80,
+    cottageLevel: 1,
+    harborLevel: 1,
+    boatLevel: 1,
+    catCount: 1,
+  }
+}
+
+function invNum(inv: Record<string, number>, key: string, fallback: number): number {
+  const v = inv[key]
+  if (typeof v === 'number' && Number.isFinite(v)) return Math.max(0, Math.floor(v))
+  return fallback
+}
+
+function sliceGoalSnap(d: Partial<PersistSlice>, fallback: GoalSnap): GoalSnap {
+  const inv =
+    d.inventory && typeof d.inventory === 'object'
+      ? (d.inventory as Record<string, number>)
+      : {}
+  const cottageLv =
+    d.cottage && typeof d.cottage === 'object' ? (d.cottage as LevelState).level : fallback.cottageLevel
+  const harborLv =
+    d.harbor && typeof d.harbor === 'object' ? (d.harbor as LevelState).level : fallback.harborLevel
+  const boatLv =
+    d.boat && typeof d.boat === 'object' ? (d.boat as LevelState).level : fallback.boatLevel
+  return {
+    fish: invNum(inv, 'fish', fallback.fish),
+    wheat: invNum(inv, 'wheat', fallback.wheat),
+    ore: invNum(inv, 'ore', fallback.ore),
+    wood: invNum(inv, 'wood', fallback.wood),
+    knowledge: invNum(inv, 'knowledge', fallback.knowledge),
+    coins:
+      typeof d.coins === 'number' && Number.isFinite(d.coins)
+        ? Math.max(0, Math.floor(d.coins))
+        : fallback.coins,
+    cottageLevel: Math.max(1, Math.floor(Number(cottageLv) || fallback.cottageLevel)),
+    harborLevel: Math.max(1, Math.floor(Number(harborLv) || fallback.harborLevel)),
+    boatLevel: Math.max(1, Math.floor(Number(boatLv) || fallback.boatLevel)),
+    catCount: Array.isArray(d.cats) ? Math.max(0, d.cats.length) : fallback.catCount,
+  }
+}
+
 export function createFreshPersistSlice(): PersistSlice {
+  const startSnap = startingGoalSnap()
   return {
     day: 1,
     minuteOfDay: 8 * 60,
@@ -161,7 +214,7 @@ export function createFreshPersistSlice(): PersistSlice {
     celestialSize: 1.15,
     skyOrbit: 52,
     gameOver: false,
-    seasonGoal: rollSeasonGoal('spring', 1, []),
+    seasonGoal: rollSeasonGoal('spring', 1, [], startSnap),
     goalHistory: [],
     lastIslandSpeechAt: 0,
     catSpeechAt: {},
@@ -332,11 +385,17 @@ function sanitizeMajorEvent(raw: unknown, legacyPirate?: unknown): MajorEventSta
   }
 }
 
-function sanitizeGoal(raw: unknown, season: Season, day: number, history: string[]): SeasonGoal {
-  if (!raw || typeof raw !== 'object') return rollSeasonGoal(season, day, history)
+function sanitizeGoal(
+  raw: unknown,
+  season: Season,
+  day: number,
+  history: string[],
+  snap: GoalSnap,
+): SeasonGoal {
+  if (!raw || typeof raw !== 'object') return rollSeasonGoal(season, day, history, snap)
   const g = raw as Partial<SeasonGoal>
-  if (!GOAL_KINDS.has(g.kind as GoalKind)) return rollSeasonGoal(season, day, history)
-  return {
+  if (!GOAL_KINDS.has(g.kind as GoalKind)) return rollSeasonGoal(season, day, history, snap)
+  const goal: SeasonGoal = {
     kind: g.kind as GoalKind,
     target: Math.max(1, Math.floor(asNum(g.target, 1))),
     progress: Math.max(0, Math.floor(asNum(g.progress, 0))),
@@ -347,6 +406,11 @@ function sanitizeGoal(raw: unknown, season: Season, day: number, history: string
     rewardMedicine: Math.max(0, Math.floor(asNum(g.rewardMedicine, 0))),
     rewardKnowledge: Math.max(0, Math.floor(asNum(g.rewardKnowledge, 0))),
   }
+  // 旧档：目标未领奖却已因开局库存达标 → 重抽，避免一进游戏就完成
+  if (!goal.completed && isGoalMet(goal, snap)) {
+    return rollSeasonGoal(season, day, history, snap)
+  }
+  return goal
 }
 
 function sanitizeSlice(raw: unknown): PersistSlice | null {
@@ -425,7 +489,13 @@ function sanitizeSlice(raw: unknown): PersistSlice | null {
     celestialSize: Math.max(0.5, asNum(d.celestialSize, 1.15)),
     skyOrbit: Math.max(20, asNum(d.skyOrbit, 52)),
     gameOver: asBool(d.gameOver, false),
-    seasonGoal: sanitizeGoal(d.seasonGoal, season, day, history),
+    seasonGoal: sanitizeGoal(
+      d.seasonGoal,
+      season,
+      day,
+      history,
+      sliceGoalSnap(d, startingGoalSnap()),
+    ),
     goalHistory: history,
     lastIslandSpeechAt: asNum(d.lastIslandSpeechAt, 0),
     catSpeechAt:

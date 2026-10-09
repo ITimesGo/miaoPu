@@ -116,6 +116,19 @@ function expand(kind: GoalKind, targets: number[]): GoalCandidate[] {
   return targets.map((target) => ({ kind, target }))
 }
 
+export type GoalSnap = {
+  fish: number
+  wheat: number
+  ore: number
+  wood: number
+  knowledge: number
+  coins: number
+  cottageLevel: number
+  harborLevel: number
+  boatLevel: number
+  catCount: number
+}
+
 /**
  * 四季大池：同种类多档数值 + 新种类。
  * 合计约 90+ 条，配合 40 条历史去重，约 10 年内少重复。
@@ -123,9 +136,10 @@ function expand(kind: GoalKind, targets: number[]): GoalCandidate[] {
 export const SEASON_GOAL_POOLS: Record<Season, GoalCandidate[]> = {
   spring: [
     ...expand('stock_wheat', [6, 8, 10, 12, 14, 16, 20]),
-    ...expand('stock_fish', [4, 6, 8, 10]),
-    ...expand('stock_wood', [3, 5, 7, 9]),
-    ...expand('stock_ore', [2, 4, 6]),
+    /** 开局鱼 4 / 木 12 / 矿 10：目标须高于开局库存 */
+    ...expand('stock_fish', [6, 8, 10, 12, 14]),
+    ...expand('stock_wood', [16, 20, 24, 28]),
+    ...expand('stock_ore', [14, 18, 22, 26]),
     ...expand('stock_coins', [100, 140, 180]),
     ...expand('stock_knowledge', [3, 5, 8]),
     ...expand('cat_count', [2, 3]),
@@ -137,10 +151,10 @@ export const SEASON_GOAL_POOLS: Record<Season, GoalCandidate[]> = {
     ...expand('craft_medicine', [1, 2]),
   ],
   summer: [
-    ...expand('stock_fish', [6, 8, 10, 12, 14, 16]),
+    ...expand('stock_fish', [8, 10, 12, 14, 16, 18]),
     ...expand('stock_wheat', [8, 10, 12, 14]),
-    ...expand('stock_ore', [3, 5, 7, 9, 11]),
-    ...expand('stock_wood', [4, 6, 8]),
+    ...expand('stock_ore', [16, 20, 24, 28, 32]),
+    ...expand('stock_wood', [18, 22, 26, 30]),
     ...expand('stock_coins', [120, 160, 200, 240]),
     ...expand('stock_knowledge', [4, 6, 9]),
     ...expand('cat_count', [2, 3, 4]),
@@ -154,9 +168,9 @@ export const SEASON_GOAL_POOLS: Record<Season, GoalCandidate[]> = {
   ],
   autumn: [
     ...expand('stock_wheat', [10, 12, 14, 16, 18, 22, 26]),
-    ...expand('stock_fish', [6, 8, 10, 12]),
-    ...expand('stock_wood', [5, 7, 9, 11]),
-    ...expand('stock_ore', [4, 6, 8]),
+    ...expand('stock_fish', [8, 10, 12, 14, 16]),
+    ...expand('stock_wood', [20, 24, 28, 32]),
+    ...expand('stock_ore', [18, 22, 26, 30]),
     ...expand('stock_coins', [150, 200, 250]),
     ...expand('stock_knowledge', [5, 8, 10]),
     ...expand('cat_count', [3, 4]),
@@ -169,9 +183,9 @@ export const SEASON_GOAL_POOLS: Record<Season, GoalCandidate[]> = {
     ...expand('craft_medicine', [2, 3]),
   ],
   winter: [
-    ...expand('stock_fish', [8, 10, 12, 14, 16, 18]),
-    ...expand('stock_ore', [5, 7, 9, 12]),
-    ...expand('stock_wood', [6, 8, 10, 12]),
+    ...expand('stock_fish', [10, 12, 14, 16, 18, 20]),
+    ...expand('stock_ore', [18, 22, 26, 32]),
+    ...expand('stock_wood', [20, 24, 28, 34]),
     ...expand('stock_coins', [160, 220, 280]),
     ...expand('stock_knowledge', [6, 9, 12]),
     ...expand('stock_wheat', [8, 12]),
@@ -200,16 +214,37 @@ function pickFromPool(
   return pool[Math.floor(Math.random() * pool.length)] ?? fallback
 }
 
-/** 按季节抽目标；避开近期历史（先 40，不够再 20，再不够允许重复） */
+/** 存量/等级类：当前快照已达标则不应再抽到 */
+export function candidateAlreadyMet(c: GoalCandidate, snap: GoalSnap): boolean {
+  if (isCumulativeGoal(c.kind)) return false
+  const probe: SeasonGoal = {
+    kind: c.kind,
+    target: c.target,
+    progress: 0,
+    season: 'spring',
+    completed: false,
+    rewardLabel: '',
+    rewardCoins: 0,
+    rewardMedicine: 0,
+    rewardKnowledge: 0,
+  }
+  return liveGoalProgress(probe, snap) >= c.target
+}
+
+/** 按季节抽目标；避开近期历史与当前已满足的存量目标 */
 export function rollSeasonGoal(
   season: Season,
   dayHint = 1,
   history: string[] = [],
+  snap?: GoalSnap,
 ): SeasonGoal {
-  const list = SEASON_GOAL_POOLS[season]
-  let choice = pickFromPool(list, history, GOAL_HISTORY_LIMIT, dayHint, season)
+  const raw = SEASON_GOAL_POOLS[season]
+  const list =
+    snap != null ? raw.filter((c) => !candidateAlreadyMet(c, snap)) : raw
+  const pool = list.length > 0 ? list : raw
+  let choice = pickFromPool(pool, history, GOAL_HISTORY_LIMIT, dayHint, season)
   if (history.includes(goalKey(choice)) && history.length >= Math.floor(GOAL_HISTORY_LIMIT / 2)) {
-    choice = pickFromPool(list, history, Math.floor(GOAL_HISTORY_LIMIT / 2), dayHint + 3, season)
+    choice = pickFromPool(pool, history, Math.floor(GOAL_HISTORY_LIMIT / 2), dayHint + 3, season)
   }
   const reward = rewardFor(choice.kind, choice.target)
   return {
@@ -233,19 +268,6 @@ export function goalRewardText(goal: SeasonGoal): string {
   if (goal.rewardMedicine > 0) parts.push(`药品 ×${goal.rewardMedicine}`)
   if (goal.rewardKnowledge > 0) parts.push(`知识 ×${goal.rewardKnowledge}`)
   return parts.length > 0 ? parts.join(' · ') : '无'
-}
-
-export type GoalSnap = {
-  fish: number
-  wheat: number
-  ore: number
-  wood: number
-  knowledge: number
-  coins: number
-  cottageLevel: number
-  harborLevel: number
-  boatLevel: number
-  catCount: number
 }
 
 export function liveGoalProgress(goal: SeasonGoal, ctx: GoalSnap): number {
